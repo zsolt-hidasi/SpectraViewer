@@ -1,0 +1,36 @@
+[1.0.0] – 2026-02-25
+  o Initial stable release.
+  o Core features:
+    - Open spectrum files (OPUS .0–.5, JCAMP-DX .dx/.jdx, DPT *.dpt)
+    - Open folder (recursive optional) and browse spectra
+    - Navigation (Prev/Next, Home/End, PageUp/PageDown)
+    - Plot controls (invert X, crosshair)
+    - Export plot as image (PNG/JPG/PDF/SVG)
+[1.1.0] – 2026-03-02
+  o Added: Window-wide drag&drop open for file/folder (TkinterDnD2).
+  o Added: Multi-item drop creates an ad-hoc playlist from dropped files (and dropped folders are expanded to supported spectra).
+  o Kept: Single-item drop preserves legacy behavior (file → folder context + index; folder → folder scan).
+  o Internal: Robust drop parsing (Tcl splitlist + brace handling for paths with spaces).
+[1.1.1] – 2026-03-06
+  o Add a custom file list selection option to the file dialog.
+  o Adapt the user interface to new features.
+  o Limit the number of files that can be scanned (warning at 500 items, disabling at 2000).
+  o Indicate the occurrence of unsupported files (warning) when importing lists.
+[1.1.2] – 2026-03-20
+  o Replacing graphic elements with unclear copyright status (e.g. "About" window and program icon) with custom-made versions.
+[1.1.3] – 2026-04-15
+  o Standardization of the use of constants.
+[1.1.4]
+  o Fixed a file count limit check issue that occurred when toggling subfolder traversal on and off.
+  o If the file list is too large, the program now preserves the previous valid loading state.
+  o The crosshair can now be toggled on and off in the spectrum display area using the right mouse button.
+  o Changed the number of files that can be scanned (warning at 5000 items, disabling at 20000).
+[1.1.5]
+  o Added: Single file mode for opening and viewing only one selected spectrum without loading the surrounding folder context.
+  o Added: Single file mode is applied consistently to file dialog, typed path, and drag&drop workflows.
+  o Changed: When single file mode is enabled, subfolder traversal is temporarily disabled while preserving its previous state.
+  o Changed: When single file mode is disabled, the previous folder context is rebuilt from the current spectrum using the restored subfolder traversal setting.
+  o Improved: Previous/Next navigation controls are now disabled automatically when there are fewer than two spectra in the active list.
+  o Added: The user interface text has been moved to a centralized UI_TEXT dictionary to make localization cleaner and easier to maintain.
+  o Added: Version 1.1.5 is preserved as a functional milestone with matching Hungarian and English UI variants. Both variants share the same program logic and differ only in the language of the user-facing text.
+  o Internal: This version prepares the codebase for the first public GitHub release.

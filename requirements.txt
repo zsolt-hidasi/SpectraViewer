@@ -1,0 +1,9 @@
+# Core numerical and plotting dependencies
+numpy
+matplotlib
+
+# Optional drag & drop support
+tkinterdnd2
+
+# OPUS file support
+brukeropus

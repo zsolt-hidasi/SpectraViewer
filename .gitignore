@@ -1,0 +1,49 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Build and packaging outputs
+build/
+dist/
+*.egg-info/
+.eggs/
+*.spec
+
+# PyInstaller temporary files
+*.manifest
+
+# Installer / local package outputs
+*.zip
+*.7z
+*.tar.gz
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.old
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE/editor files
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Matplotlib cache or local runtime artifacts
+.mplconfig/
+
+# Local test/output folders
+test_output/
+tmp/
