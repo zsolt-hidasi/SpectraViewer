@@ -1,7 +1,7 @@
-[![DOI](https://zenodo.org/badge/1270508432.svg)](https://doi.org/10.5281/zenodo.20715098)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20715099.svg)](https://doi.org/10.5281/zenodo.20715099)
 
 <p align="center">
-  <img src="assets/SpectraViewer_banner.png" alt="SpectraViewer banner" width="800">
+  <img src="assets/SpectraViewer_banner.png" alt="SpectraViewer banner" width="650">
 </p>
 
 # SpectraViewer
