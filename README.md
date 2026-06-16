@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/1270508432.svg)](https://doi.org/10.5281/zenodo.20715098)
+
 # SpectraViewer
 
 SpectraViewer is a lightweight desktop application for opening, browsing, and visually inspecting spectrum files. It is designed as a fast spectrum browser rather than a full spectrum-processing or spectrum-manipulation environment.
@@ -9,6 +11,8 @@ SpectraViewer does **not** replace OPUS or other dedicated spectroscopy software
 ## Current version
 
 **Version:** 1.1.5  
+**Release:** v1.1.5  
+**Version DOI:** 10.5281/zenodo.20715099  
 **Author:** Zsolt Hidasi  
 **Year:** 2026  
 **License:** MIT License
