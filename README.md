@@ -1,7 +1,11 @@
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.20715099.svg)](https://doi.org/10.5281/zenodo.20715099)
+<p align="center">
+  <a href="https://doi.org/10.5281/zenodo.20715099">
+    <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.20715099.svg" alt="DOI">
+  </a>
+</p>
 
 <p align="center">
-  <img src="assets/SpectraViewer_banner.png" alt="SpectraViewer banner" width="650">
+  <img src="assets/SpectraViewer_banner.png" alt="SpectraViewer banner" width="500">
 </p>
 
 # SpectraViewer
