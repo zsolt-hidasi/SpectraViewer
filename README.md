@@ -8,6 +8,8 @@ The program can collect supported spectrum files from a folder, from a folder tr
 
 SpectraViewer does **not** replace OPUS or other dedicated spectroscopy software. It does not perform spectral processing, manipulation, identification, or database searching. Its purpose is quick viewing and convenient browsing.
 
+SpectraViewer displays a single spectrum at a time. It does not provide stacked or overlaid multi-spectrum views, as commonly used in dedicated spectral evaluation or processing software.
+
 ## Current version
 
 **Version:** 1.1.5  
