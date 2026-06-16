@@ -1,5 +1,9 @@
 [![DOI](https://zenodo.org/badge/1270508432.svg)](https://doi.org/10.5281/zenodo.20715098)
 
+<p align="center">
+  <img src="assets/SpectraViewer_banner.png" alt="SpectraViewer banner" width="800">
+</p>
+
 # SpectraViewer
 
 SpectraViewer is a lightweight desktop application for opening, browsing, and visually inspecting spectrum files. It is designed as a fast spectrum browser rather than a full spectrum-processing or spectrum-manipulation environment.
