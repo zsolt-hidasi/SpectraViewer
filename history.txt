@@ -34,3 +34,15 @@
   o Added: The user interface text has been moved to a centralized UI_TEXT dictionary to make localization cleaner and easier to maintain.
   o Added: Version 1.1.5 is preserved as a functional milestone with matching Hungarian and English UI variants. Both variants share the same program logic and differ only in the language of the user-facing text.
   o Internal: This version prepares the codebase for the first public GitHub release.
+[1.1.6]
+  o Added: Metadata encoding selector for changing the display decoding of spectrum metadata when needed. Supported metadata encoding options include Auto / OPUS default, Windows-1252 / Western European, Windows-1250 / Central European, UTF-8, Latin-1 / ISO-8859-1, and Latin-2 / ISO-8859-2. The metadata encoding selector affects metadata display only; spectrum files are not modified.
+  o Added: INI-based settings memory using SpectraViewer.ini stored next to the program script.
+  o Added: The program now saves selected user settings automatically on exit, including spectrum color, crosshair state, x-axis inversion, loading mode, window geometry, last path, and metadata encoding.
+  o Added: On startup, the program attempts to restore the last opened file or folder according to the saved loading settings.
+  o Improved: Missing or unavailable last paths are handled silently with status-bar feedback instead of startup warning dialogs.
+  o Added: The About window now notes that deleting SpectraViewer.ini restores the default settings.
+  o Added: English and Hungarian user manuals have been updated for version 1.1.6.
+  o Added: The portable WinPython distribution is prepared for bilingual English and Hungarian use.
+  o Internal: Version 1.1.6 extends the localized English and Hungarian UI variants while keeping the program logic synchronized.
+  o Changed: The default x-axis display now follows the conventional FTIR direction while the Invert X option is off; enabling Invert X switches to the opposite axis direction.
+  o Fixed: OPUS metadata display now prefers the latest ParameterEditor SNM/SFM values when available, matching the metadata shown by OPUS after parameter editing.

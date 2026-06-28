@@ -20,14 +20,12 @@ SpectraViewer displays a single spectrum at a time. It does not provide stacked 
 
 ## Current version
 
-**Version:** 1.1.5  
-**Release:** v1.1.5  
+**Version:** 1.1.6  
+**Release:** v1.1.6  
 **Version DOI:** 10.5281/zenodo.20715099  
 **Author:** Zsolt Hidasi  
 **Year:** 2026  
 **License:** MIT License
-
-Version 1.1.5 is preserved as a functional milestone with matching English and Hungarian user-interface variants. Both variants share the same program logic and differ only in the language of the user-facing text.
 
 ## Supported spectrum formats
 
@@ -51,7 +49,8 @@ Not all supported file formats contain the same amount or structure of metadata.
 - Browse spectra with Previous/Next, Home/End, and PageUp/PageDown navigation.
 - Use **Single file** mode to inspect only one selected spectrum without loading the surrounding folder context.
 - Display basic file and spectrum metadata above the plot when available.
-- Invert the X axis for the conventional FTIR wavenumber display direction.
+- Select the character encoding used to display text metadata in OPUS and JCAMP-DX files when needed.
+- Choose the X-axis display direction.
 - Use an optional crosshair cursor to read approximate coordinates.
 - Toggle the crosshair with the right mouse button in the plot area.
 - Change the displayed spectrum color.
@@ -69,10 +68,6 @@ When a single file is opened and **Include subfolders** is not enabled, SpectraV
 When **Include subfolders** is enabled, SpectraViewer scans the same folder recursively and includes supported files from its subfolders as well. The resulting files are handled as one navigable list.
 
 This behavior is useful when a user wants to move quickly through a spectrum collection without repeatedly opening files one by one.
-
-## Single file mode
-
-Version 1.1.5 adds **Single file** mode.
 
 When **Single file** mode is enabled, SpectraViewer opens and displays only one selected spectrum file. The surrounding folder context is not loaded, and subfolder traversal is temporarily disabled.
 
@@ -132,12 +127,19 @@ The main window contains:
 - navigation buttons,
 - image export and color controls,
 - a file counter,
-- X-axis inversion and crosshair options,
+- X-axis display direction and crosshair options,
+- metadata character encoding selector,
 - the spectrum display area,
 - the Matplotlib navigation toolbar,
 - a status bar.
 
 The spectrum display area shows the current spectrum plot. When available, the header above the plot displays the filename and selected metadata, such as sample name and sample form. The status bar provides short feedback about the current state, opened file, saved output, or errors.
+
+## Configuration file
+
+SpectraViewer can store selected user preferences in a local `.ini` configuration file. This allows settings such as the interface language, X-axis display direction, metadata character encoding, spectrum color, and other display-related options to be preserved between program sessions.
+
+The configuration file is intended for convenience only. SpectraViewer can run without manual editing of this file, and the most important options can be changed directly from the user interface.
 
 ## Keyboard shortcuts
 
@@ -205,6 +207,8 @@ python SpectraViewer.py
 
 A bundled Windows distribution may include an isolated Python environment and launcher scripts. In that case, the program can be started by running the provided launcher, such as `SpectraViewer.bat`.
 
+When available, the portable ZIP package is provided in the repository's release section.
+
 The bundled distribution is intended to run without modifying system-level Python installations, Windows Registry settings, or other existing Python environments.
 
 ## Important notes and limitations
@@ -221,9 +225,9 @@ SpectraViewer does not perform spectral correction, preprocessing, baseline corr
 
 The English user interface is intended as the primary public GitHub version.
 
-A matching Hungarian UI variant is preserved for version 1.1.5. The English and Hungarian variants share the same program logic and differ only in the language of the user-facing text.
+A matching Hungarian UI variant is preserved for version 1.1.6. The English and Hungarian variants share the same program logic and differ only in the language of the user-facing text.
 
-## Proposed repository structure
+## Repository structure
 
 ```text
 SpectraViewer/
@@ -236,30 +240,29 @@ SpectraViewer/
   .gitignore
   assets/
     SpectraViewer.ico
+    SpectraViewer_banner.png
   localized/
     hu/
       SpectraViewer_1.1.5_HU.py
+      SpectraViewer_1.1.6_HU.py
+      SpectraViewerMan.pdf
   docs/
+    SpectraViewer_User_Manual_1.1.5.docx
+    SpectraViewer_User_Manual_1.1.6.docx
     SpectraViewerMan.pdf
 ```
 
 ## Citation and DOI
 
-SpectraViewer is intended to be published as citable research software. The planned workflow is:
+SpectraViewer is archived on Zenodo and has a citable DOI: `10.5281/zenodo.20715099`.
 
-1. publish the source code on GitHub,
-2. create a tagged GitHub release,
-3. archive the release through Zenodo,
-4. obtain a DOI for the released version,
-5. update the README and citation metadata with the DOI.
+If you use SpectraViewer in research, teaching, or documentation, please cite the released version using the citation information provided in the repository or on Zenodo.
 
-A `CITATION.cff` file should be added before the first public release so that GitHub can display citation information for the repository.
-
-Until a DOI is minted, cite the repository and version manually.
+A `CITATION.cff` file is included so that GitHub can display citation information for the repository.
 
 ## License
 
-SpectraViewer is planned to be released under the MIT License.
+SpectraViewer is released under the MIT License.
 
 ## Acknowledgements
 
