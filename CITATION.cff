@@ -2,7 +2,7 @@ cff-version: 1.2.0
 message: "If you use SpectraViewer in your work, please cite it using the metadata from this file."
 title: "SpectraViewer"
 version: "1.1.6"
-doi: "10.5281/zenodo.20715099"
+doi: "10.5281/zenodo.20715098"
 date-released: 2026-06-28
 type: software
 authors:

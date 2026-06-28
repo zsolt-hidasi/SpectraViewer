@@ -1,6 +1,6 @@
 <p align="center">
-  <a href="https://doi.org/10.5281/zenodo.20715099">
-    <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.20715099.svg" alt="DOI">
+  <a href="https://doi.org/10.5281/zenodo.20715098">
+    <img src="https://zenodo.org/badge/DOI/10.5281/zenodo.20715098.svg" alt="DOI">
   </a>
 </p>
 
@@ -22,7 +22,7 @@ SpectraViewer displays a single spectrum at a time. It does not provide stacked 
 
 **Version:** 1.1.6  
 **Release:** v1.1.6  
-**Version DOI:** 10.5281/zenodo.20715099  
+**Version DOI:** 10.5281/zenodo.20715098  
 **Author:** Zsolt Hidasi  
 **Year:** 2026  
 **License:** MIT License
@@ -254,7 +254,7 @@ SpectraViewer/
 
 ## Citation and DOI
 
-SpectraViewer is archived on Zenodo and has a citable DOI: `10.5281/zenodo.20715099`.
+SpectraViewer is archived on Zenodo and has a citable DOI: `10.5281/zenodo.20715098`.
 
 If you use SpectraViewer in research, teaching, or documentation, please cite the released version using the citation information provided in the repository or on Zenodo.
 
