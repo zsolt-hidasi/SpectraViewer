@@ -20,8 +20,8 @@ SpectraViewer displays a single spectrum at a time. It does not provide stacked 
 
 ## Current version
 
-**Version:** 1.1.6  
-**Release:** v1.1.6  
+**Version:** 1.1.7  
+**Release:** v1.1.7  
 **Version DOI:** 10.5281/zenodo.20715098  
 **Author:** Zsolt Hidasi  
 **Year:** 2026  
@@ -225,7 +225,7 @@ SpectraViewer does not perform spectral correction, preprocessing, baseline corr
 
 The English user interface is intended as the primary public GitHub version.
 
-A matching Hungarian UI variant is preserved for version 1.1.6. The English and Hungarian variants share the same program logic and differ only in the language of the user-facing text.
+A matching Hungarian UI variant is preserved for version 1.1.7. The English and Hungarian variants share the same program logic and differ only in the language of the user-facing text.
 
 ## Repository structure
 
@@ -245,11 +245,12 @@ SpectraViewer/
     hu/
       SpectraViewer_1.1.5_HU.py
       SpectraViewer_1.1.6_HU.py
-      SpectraViewerMan.pdf
+      SpectraViewer_1.1.7_HU.py
+      SpectraViewerMan_HU.pdf
   docs/
     SpectraViewer_User_Manual_1.1.5.docx
     SpectraViewer_User_Manual_1.1.6.docx
-    SpectraViewerMan.pdf
+    SpectraViewerMan_EN.pdf
 ```
 
 ## Citation and DOI
