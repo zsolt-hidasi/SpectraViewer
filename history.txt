@@ -46,3 +46,6 @@
   o Internal: Version 1.1.6 extends the localized English and Hungarian UI variants while keeping the program logic synchronized.
   o Changed: The default x-axis display now follows the conventional FTIR direction while the Invert X option is off; enabling Invert X switches to the opposite axis direction.
   o Fixed: OPUS metadata display now prefers the latest ParameterEditor SNM/SFM values when available, matching the metadata shown by OPUS after parameter editing.
+[1.1.7]
+  o Fixed OPUS metadata parsing so that reverted ParameterEditor / macro edits in the file history are no longer displayed as active metadata.
+  o Active Sample Name and Sample Form values are now read from OPUS parameter records instead of COMMAND_LINE history entries.

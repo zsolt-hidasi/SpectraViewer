@@ -38,9 +38,9 @@ WARN_FILE_COUNT = 5000
 MAX_FILE_COUNT = 20000
 
 ENCODING_OPTIONS = [
-    ("Auto / OPUS default", "auto"),
-    ("Windows-1252 / Western European", "cp1252"),
-    ("Windows-1250 / Central European", "cp1250"),
+    ("Auto / OPUS alapértelmezett", "auto"),
+    ("Windows-1252 / nyugat-európai", "cp1252"),
+    ("Windows-1250 / közép-európai", "cp1250"),
     ("UTF-8", "utf-8"),
     ("Latin-1 / ISO-8859-1", "iso-8859-1"),
     ("Latin-2 / ISO-8859-2", "iso-8859-2"),
@@ -50,94 +50,90 @@ ENCODING_VALUE_TO_LABEL = {value: label for label, value in ENCODING_OPTIONS}
 DEFAULT_METADATA_ENCODING = "auto"
 DEFAULT_LINE_COLOR = "#1f77b4"
 
-UI_TEXT = {
-    "initial_status": "Choose a file or folder…",
-    "last_path_not_found_status": "Last path not found. Choose a file or folder…",
-    "last_path_unsupported_status": "Last path has an unsupported format. Choose a file or folder…",
-    "last_path_single_folder_status": "Last path is a folder, but Single file mode is enabled. Choose a spectrum file…",
-    "last_path_no_spectrum_status": "Last path restored, but no supported spectrum file was found.",
-    "last_path_too_many_status": "Last folder contains {count} supported files. Not loaded automatically; open it manually if needed.",
-    "last_path_restored_status": "Last session restored: {path}",
-    "path_label": "Path:",
-    "folder_button": "Folder…",
-    "file_button": "File…",
-    "recursive_checkbox": "Include subfolders",
-    "single_file_checkbox": "Single file",
-    "about_button": "About",
-    "prev_button": "◀ Previous",
-    "next_button": "Next ▶",
-    "save_image_button": "Save image",
-    "color_button": "Color",
-    "invert_x_checkbox": "Invert X",
-    "crosshair_checkbox": "Crosshair",
-    "metadata_encoding_label": "Metadata encoding:",
-    "axis_wavenumber": "Wavenumber (cm⁻¹)",
-    "axis_intensity": "Intensity",
-
-    "single_file_title": "Single file mode",
-    "single_file_drop_multiple": "In single file mode, only one spectrum file can be dropped at a time.",
-    "single_file_folder_not_allowed": "In single file mode, open a specific spectrum file instead of a folder.",
-    "single_file_select_one": "In single file mode, exactly one supported spectrum file can be opened at a time.",
-    "single_file_path_must_be_file": "In single file mode, the path must point to a specific spectrum file, not a folder.",
-    "single_file_invalid_path": "In single file mode, the specified path must point to an existing spectrum file.",
-    "single_file_subfolders_disabled": "Subfolder traversal is not used in single file mode.",
-    "single_file_enabled_status": "Single file mode enabled.",
-    "single_file_disabled_rebuilt_status": "Single file mode disabled. Folder context rebuilt ({mode}).",
-    "single_file_disabled_restored_status": "Single file mode disabled. Recursive setting restored.",
-
-    "too_many_files_title": "Too many files",
-    "too_many_files_error": "The {origin} contains {count} supported files.\n\nThis exceeds the allowed maximum ({max_count}).\nPlease narrow the selection or choose a smaller folder.",
-    "too_many_files_confirm_title": "Large file list",
-    "too_many_files_confirm": "The {origin} contains {count} supported files.\n\nLoading this many spectra is memory-intensive and may make the program slow.\nDo you want to continue?",
-
-    "all_supported_files": "All supported files",
-    "opus_numeric_extension": "OPUS / numeric extension",
-    "all_files": "All files",
-    "open_files_title": "Open files",
-    "open_folder_title": "Open folder",
-    "unsupported_format_title": "Unsupported format",
-    "unsupported_selected_message": "The selected file(s) use an unsupported format.",
-    "unsupported_path_message": "The specified file format is not supported.",
-    "some_files_skipped_title": "Some files were skipped",
-    "selected_files_skipped": "Of the {total} selected files, {valid} are supported and {invalid} were skipped.\n\nSkipped files:\n- {shown}",
-    "dropped_items_skipped": "Of the selected items, {valid} supported files were loaded and {invalid} were skipped.\n\nSkipped files:\n- {shown}",
-    "and_more": "\n- ... and {more} more",
-    "selected_list_origin": "selected list",
-    "opened_folder_origin": "opened folder",
-    "folder_context_origin": "folder context",
-    "folder_context_origin_alt": "folder context",
-    "warning_title": "Warning",
-    "no_loadable_file": "No loadable file was found.",
-    "invalid_path_title": "Invalid path",
-    "invalid_path_message": "The specified path (file or folder) is invalid.",
-    "no_match_title": "No match",
-    "no_spectrum_at_path": "No supported spectrum file was found at the specified path.",
-    "context_reload_cancelled": "Folder context reload was cancelled. The current file remains loaded.",
-    "invalid_file_title": "Invalid file",
-    "no_supported_among_items": "No supported format was found among the selected items.",
-    "no_supported_among_items_with_skips": "The {total} selected item(s) did not contain any supported format.\n\nSkipped files:\n- {shown}",
-    "custom_list_loaded": "Custom list loaded: {count} files",
-    "invalid_folder_status": "Invalid folder.",
-    "loading_cancelled_previous_kept": "Loading cancelled: too many files. The previous list remains active.",
-    "no_match_in_folder_status": "No match in this folder (OPUS/DX/JDX/DPT).",
-    "error_prefix": "Error",
-    "file_label": "File",
-    "unknown_error": "Unknown error",
-    "spectrum_color_title": "Spectrum color",
-    "about_window_title": "About",
-    "about_dnd_line": "\t• Drag&Drop – drop a file or folder onto the window\n",
-    "about_text": "Version: {version} © {author}, {year}\nDevelopment: {author}, OpenAI\n\nSupported spectrum formats:\n\t• OPUS (*.0–*.5)\n\t• JCAMP-DX (*.dx, *.jdx)\n\t• DPT (*.dpt)\n\nKeyboard shortcuts:\n\t• Ctrl+O – Open file\n\t• Ctrl+Shift+O – Open folder\n\t• Left / Right arrow – Previous / next spectrum\n\t• Ctrl+S – Save spectrum as image\n\t• Ctrl+Shift+C – Select / change spectrum color\n{dnd_line}\t• F1 – About\n\nUser guide: SpectraViewerMan_EN.pdf\n\nSettings are saved in SpectraViewer.ini. Delete this file to restore defaults.",
-    "save_message_title": "Save",
-    "no_loaded_spectrum": "No spectrum is loaded.",
-    "save_plot_title": "Save plot",
-    "saved_status": "Saved: {path}",
-
-    "runtime_opus_not_available": "The 'brukeropus' package cannot be imported (OPUS reading is not available).",
-    "runtime_no_xy": "No x/y values were found in the spectrum file. data_keys=",
-    "runtime_unknown_file_type": "Unknown file type.",
-    "runtime_jcamp_no_data": "JCAMP: no data found (XYDATA).",
-    "runtime_jcamp_unknown_compression": "JCAMP: Y data could not be read (unknown compression?).",
-    "runtime_dpt_too_few_points": "Too few data points could be read from the DPT file.",
+UI_TEXT = UI_TEXT = {
+    'initial_status': 'Válassz egy fájlt vagy mappát…',
+    'last_path_not_found_status': 'Az utolsó elérési út nem található. Válassz egy fájlt vagy mappát…',
+    'last_path_unsupported_status': 'Az utolsó elérési út nem támogatott formátumra mutat. Válassz egy fájlt vagy mappát…',
+    'last_path_single_folder_status': 'Az utolsó elérési út mappa, de a Single file mód be van kapcsolva. Válassz egy spektrumfájlt…',
+    'last_path_no_spectrum_status': 'Az utolsó útvonal visszaállítva, de nem találtam támogatott spektrumfájlt.',
+    'last_path_too_many_status': 'Az utolsó mappa {count} támogatott fájlt tartalmaz. Automatikusan nem töltöttem be; szükség esetén nyisd meg kézzel.',
+    'last_path_restored_status': 'Utolsó munkamenet visszaállítva: {path}',
+    'path_label': 'Elérési út:',
+    'folder_button': 'Mappa…',
+    'file_button': 'Fájl…',
+    'recursive_checkbox': 'almappák bejárása',
+    'single_file_checkbox': 'csak egy fájl',
+    'about_button': 'Névjegy',
+    'prev_button': '◀ Előző',
+    'next_button': 'Következő ▶',
+    'save_image_button': 'Mentés képként',
+    'color_button': 'Szín',
+    'invert_x_checkbox': 'X fordítás',
+    'crosshair_checkbox': 'Szálkereszt',
+    'metadata_encoding_label': 'Metaadat-kódolás:',
+    'axis_wavenumber': 'Wavenumber (cm⁻¹)',
+    'axis_intensity': 'Intensity',
+    'single_file_title': 'Single file mód',
+    'single_file_drop_multiple': 'Single file módban egyszerre csak egy spektrumfájl húzható be.',
+    'single_file_folder_not_allowed': 'Single file módban mappa helyett egy konkrét spektrumfájlt kell megnyitni.',
+    'single_file_select_one': 'Single file módban egyszerre pontosan egy támogatott spektrumfájl nyitható meg.',
+    'single_file_path_must_be_file': 'Single file módban az elérési útnak egy konkrét spektrumfájlra kell mutatnia, nem mappára.',
+    'single_file_invalid_path': 'Single file módban a megadott útvonalnak egy létező spektrumfájlra kell mutatnia.',
+    'single_file_subfolders_disabled': 'Single file módban az almappák bejárása nem használható.',
+    'single_file_enabled_status': 'Single file mód bekapcsolva.',
+    'single_file_disabled_rebuilt_status': 'Single file mód kikapcsolva. Mappakörnyezet visszatöltve ({mode}).',
+    'single_file_disabled_restored_status': 'Single file mód kikapcsolva. A rekurzív beállítás visszaállítva.',
+    'too_many_files_title': 'Túl sok fájl',
+    'too_many_files_error': 'A {origin} {count} támogatott fájlt tartalmaz.\n\nEz meghaladja a megengedett maximumot ({max_count}).\nSzűkítsd a kijelölést vagy válassz kisebb mappát.',
+    'too_many_files_confirm_title': 'Túl sok betöltendő fájl',
+    'too_many_files_confirm': 'A {origin} {count} támogatott fájlt tartalmaz.\n\nEnnyi spektrum betöltése memóriaigényes művelet,\nami lassú működést eredményezhet.\nSzeretnéd folytatni?',
+    'all_supported_files': 'Minden támogatott',
+    'opus_numeric_extension': 'OPUS / numerikus kiterjesztés',
+    'all_files': 'Minden fájl',
+    'open_files_title': 'Fájlok megnyitása',
+    'open_folder_title': 'Mappa kiválasztása',
+    'unsupported_format_title': 'Nem támogatott formátum',
+    'unsupported_selected_message': 'A kiválasztott fájl(ok) formátuma nem támogatott.',
+    'unsupported_path_message': 'A megadott fájl formátuma nem támogatott.',
+    'some_files_skipped_title': 'Néhány fájl kihagyva',
+    'selected_files_skipped': 'A kiválasztott {total} fájlból {valid} támogatott, {invalid} kihagyva.\n\nKihagyott fájlok:\n- {shown}',
+    'dropped_items_skipped': 'A kiválasztott elemekből {valid} támogatott fájl került betöltésre és {invalid} kihagyva.\n\nKihagyott fájlok:\n- {shown}',
+    'and_more': '\n- ... és még {more} db',
+    'selected_list_origin': 'kiválasztott lista',
+    'opened_folder_origin': 'megnyitott mappa',
+    'folder_context_origin': 'mappa-kontextus',
+    'folder_context_origin_alt': 'mappa-kontextus',
+    'warning_title': 'Figyelem',
+    'no_loadable_file': 'Nincs betölthető fájl.',
+    'invalid_path_title': 'Érvénytelen útvonal',
+    'invalid_path_message': 'A megadott elérési út (fájl vagy mappa) érvénytelen.',
+    'no_match_title': 'Nincs találat',
+    'no_spectrum_at_path': 'A megadott útvonalon nem találtam támogatott formátumú spektrumot.',
+    'context_reload_cancelled': 'A mappakörnyezet visszatöltése megszakítva. Az aktuális fájl maradt betöltve.',
+    'invalid_file_title': 'Érvénytelen fájl',
+    'no_supported_among_items': 'A kiválasztott elemek között nincs támogatott formátum.',
+    'no_supported_among_items_with_skips': 'A kiválasztott {total} tétel között nem volt támogatott formátum.\n\nKihagyott fájlok:\n- {shown}',
+    'custom_list_loaded': 'Egyedi lista betöltve: {count} fájl',
+    'invalid_folder_status': 'Érvénytelen mappa.',
+    'loading_cancelled_previous_kept': 'Betöltés megszakítva: túl sok fájl. Az előző lista maradt aktív.',
+    'no_match_in_folder_status': 'Nincs találat ebben a mappában (OPUS/DX/JDX/DPT).',
+    'error_prefix': 'Hiba',
+    'file_label': 'Fájl',
+    'unknown_error': 'Ismeretlen hiba',
+    'spectrum_color_title': 'Spektrum színe',
+    'about_window_title': 'Névjegy',
+    'about_dnd_line': '\t• Drag&Drop – fájl vagy mappa behúzása az ablakba\n',
+    'about_text': 'Verzió: {version} © {author}, {year}\nFejlesztés: {author}, OpenAI\n\nTámogatott spektrum formátumok:\n\t• OPUS (*.0–*.5)\n\t• JCAMP-DX (*.dx, *.jdx)\n\t• DPT (*.dpt)\n\nGyorsbillentyűk:\n\t• Ctrl+O – Fájl megnyitása\n\t• Ctrl+Shift+O – Mappa megnyitása\n\t• Bal nyíl / Jobb nyíl – Előző / Következő spektrum\n\t• Ctrl+S – spektrum mentése képként\n\t• Ctrl+Shift+C – spektrum szín választása / módosítása\n{dnd_line}\t• F1 – Névjegy\n\nHasználati útmutató: SpectraViewerMan_HU.pdf\n\nA beállítások a SpectraViewer.ini fájlba mentődnek. Az alapállapot visszaállításához töröld ezt a fájlt.',
+    'save_message_title': 'Mentés',
+    'no_loaded_spectrum': 'Nincs betöltött spektrum.',
+    'save_plot_title': 'Ábra mentése',
+    'saved_status': 'Mentve: {path}',
+    'runtime_opus_not_available': "A 'brukeropus' nem importálható (OPUS olvasás nem megy).",
+    'runtime_no_xy': 'Nincs x/y érték a spektrumfájlban. data_keys=',
+    'runtime_unknown_file_type': 'Ismeretlen fájltípus.',
+    'runtime_jcamp_no_data': 'JCAMP: nincs adat (XYDATA).',
+    'runtime_jcamp_unknown_compression': 'JCAMP: nem sikerült Y adatot kiolvasni (ismeretlen tömörítés?).',
+    'runtime_dpt_too_few_points': 'A DPT-ből nem sikerült elég pontot kiolvasni.',
 }
 
 
@@ -392,8 +388,6 @@ def decode_meta_text(value, metadata_encoding: str = DEFAULT_METADATA_ENCODING):
 
     return value
 
-
-
 def extract_opus_active_parameter_metadata(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING) -> Dict[str, str]:
     """
     Extract active Sample Name / Sample Form values from OPUS binary parameter
@@ -412,6 +406,7 @@ def extract_opus_active_parameter_metadata(path: str, metadata_encoding: str = D
     used. This avoids the earlier "last text occurrence wins" problem while
     keeping reverted history edits out of the displayed metadata.
     """
+
     try:
         data = Path(path).read_bytes()
     except Exception:
@@ -1397,7 +1392,7 @@ class App(_BaseTk):
             # rebuild the context around the current file
             # using the previously preserved recursive setting.
             if self.rebuild_context_from_current_file(recursive=restored_recursive):
-                mode = "recursive" if restored_recursive else "non-recursive"
+                mode = "rekurzív" if restored_recursive else "nem rekurzív"
                 self.status_var.set(UI_TEXT["single_file_disabled_rebuilt_status"].format(mode=mode))
             else:
                 self.status_var.set(UI_TEXT["single_file_disabled_restored_status"])
