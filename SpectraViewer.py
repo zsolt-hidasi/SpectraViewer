@@ -1548,7 +1548,11 @@ class App(_BaseTk):
             field.bind("<FocusOut>", self._on_header_focus_out)
             field.bind("<Tab>", self._focus_next_widget)
             field.bind("<Shift-Tab>", self._focus_prev_widget)
-            field.bind("<ISO_Left_Tab>", self._focus_prev_widget)
+            #field.bind("<ISO_Left_Tab>", self._focus_prev_widget) # It is not compatible with Portable 3.11.8, so we’ll have to replace it everywhere
+            try:
+                field.bind("<ISO_Left_Tab>", self._focus_prev_widget)
+            except tk.TclError:
+                pass
             field.bind("<Control-c>", self._copy_widget_selection_to_clipboard)
             field.bind("<Control-C>", self._copy_widget_selection_to_clipboard)
 
