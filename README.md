@@ -22,6 +22,7 @@ SpectraViewer displays a single spectrum at a time. It does not provide stacked 
 
 **Version:** 1.1.8<br>
 **Release:** v1.1.8<br>
+**Version DOI:** 10.5281/zenodo.22736212<br>
 **Concept DOI:** 10.5281/zenodo.20715098<br>
 **Author:** Zsolt Hidasi<br>
 **Year:** 2026<br>
