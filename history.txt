@@ -49,3 +49,21 @@
 [1.1.7]
   o Fixed OPUS metadata parsing so that reverted ParameterEditor / macro edits in the file history are no longer displayed as active metadata.
   o Active Sample Name and Sample Form values are now read from OPUS parameter records instead of COMMAND_LINE history entries.
+
+[1.1.8]
+  o Added: OPUS DataSeries support for multi-spectrum files, including line-mapping and FPA composite measurements.
+  o Added: Sequential browsing within OPUS DataSeries using dedicated Previous/Next series controls and the Up/Down arrow keys.
+  o Added: Processed OPUS spectral-type support for Absorbance, Transmittance, Reflectance, and Kubelka–Munk data; supported DataSeries are preferred over auxiliary single-channel blocks when present.
+  o Added: INFO block viewer with field names and values read directly from the active OPUS INFO block. The viewer follows the current spectrum and the selected metadata encoding, and can be opened with Ctrl+I when INFO data are available.
+  o Improved: INFO parsing now also handles OPUS files whose INFO block has been edited after acquisition.
+  o Improved: Active Sample Name / Sample Form detection now selects the latest valid OPUS parameter cluster, so later metadata edits and Undo operations are interpreted correctly while obsolete history values are ignored.
+  o Changed: OPUS file discovery now accepts arbitrary numeric file extensions and validates native OPUS files using the binary file signature, preventing unrelated files with numeric extensions from being added to browsing lists.
+  o Added: Warning for large OPUS files. The default threshold is 20 MB; folder/list scans report large files in a single aggregate warning, and accepted files are not repeatedly warned about during the same session.
+  o Added: Advanced INI settings for file-list and large-OPUS warning thresholds: warn_file_count (default 5000; valid range 1–19999) and large_opus_warn_mb (default 20 MB; valid range >0–100 MB). The 20000-file hard limit remains internal and cannot be overridden.
+  o Added: Configurable spectrum line width in SpectraViewer.ini (default 1.5; valid range 0.1–5.0). Invalid values fall back to the default.
+  o Improved: Filename, Sample Name, and Sample Form header fields are no longer dynamically truncated; the full text can be selected, copied, and reached by keyboard focus.
+  o Improved: Keyboard navigation and focus handling were refined for the Path field and read-only header fields. Manual Path entry transfers focus after a successful open so spectrum navigation is immediately available.
+  o Improved: Text copied from the Path field, header fields, and INFO window now remains on the Windows clipboard after SpectraViewer is closed.
+  o Added: Ctrl+I shortcut for the INFO viewer; keyboard shortcut documentation now distinguishes file-list navigation from DataSeries navigation.
+  o Updated: About text and supported-format description now reflect arbitrary numeric OPUS extensions and the expanded keyboard shortcuts.
+  o Added: English and Hungarian user manuals updated for version 1.1.8.

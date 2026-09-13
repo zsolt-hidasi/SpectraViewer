@@ -30,12 +30,21 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 
 APP_NAME = "SpectraViewer"
-VERSION_NUMBER = "1.1.7"
+VERSION_NUMBER = "1.1.8"
 AUTHOR = "Hidasi Zsolt"
 YEAR = "2026"
 
-WARN_FILE_COUNT = 5000
+DEFAULT_WARN_FILE_COUNT = 5000
 MAX_FILE_COUNT = 20000
+
+# OPUS native files use a numeric extension and this 4-byte magic signature.
+OPUS_MAGIC = b"\x0A\x0A\xFE\xFE"
+
+# Large OPUS files are still fully supported; these values only control
+# the configurable warning threshold. Very high values are rejected so
+# exceptionally large OPUS/FPA containers cannot silently bypass the warning.
+DEFAULT_LARGE_OPUS_WARN_MB = 20
+MAX_LARGE_OPUS_WARN_MB = 100
 
 ENCODING_OPTIONS = [
     ("Auto / OPUS default", "auto"),
@@ -49,6 +58,20 @@ ENCODING_LABEL_TO_VALUE = dict(ENCODING_OPTIONS)
 ENCODING_VALUE_TO_LABEL = {value: label for label, value in ENCODING_OPTIONS}
 DEFAULT_METADATA_ENCODING = "auto"
 DEFAULT_LINE_COLOR = "#1f77b4"
+DEFAULT_LINE_WIDTH = 1.5
+MIN_LINE_WIDTH = 0.1
+MAX_LINE_WIDTH = 5.0
+
+# Supported processed OPUS spectrum types.
+# The same keys are used by brukeropus for single spectra (data_keys)
+# and multi-spectrum DataSeries (series_keys).
+SUPPORTED_OPUS_SPECTRAL_TYPES = {
+    "a": "Absorbance",
+    "t": "Transmittance",
+    "r": "Reflectance",
+    "km": "Kubelka–Munk",
+}
+OPUS_SPECTRAL_TYPE_PRIORITY = ("a", "t", "r", "km")
 
 UI_TEXT = {
     "initial_status": "Choose a file or folder…",
@@ -71,6 +94,10 @@ UI_TEXT = {
     "invert_x_checkbox": "Invert X",
     "crosshair_checkbox": "Crosshair",
     "metadata_encoding_label": "Metadata encoding:",
+    "info_button": "INFO",
+    "info_window_title": "INFO",
+    "info_no_block": "No INFO block is available for this spectrum.",
+    "info_no_filled_fields": "The INFO block contains no filled fields.",
     "axis_wavenumber": "Wavenumber (cm⁻¹)",
     "axis_intensity": "Intensity",
 
@@ -89,6 +116,11 @@ UI_TEXT = {
     "too_many_files_error": "The {origin} contains {count} supported files.\n\nThis exceeds the allowed maximum ({max_count}).\nPlease narrow the selection or choose a smaller folder.",
     "too_many_files_confirm_title": "Large file list",
     "too_many_files_confirm": "The {origin} contains {count} supported files.\n\nLoading this many spectra is memory-intensive and may make the program slow.\nDo you want to continue?",
+
+    "large_opus_title": "Large OPUS file",
+    "large_opus_single_confirm": "The OPUS file\n\n{filename}\n\nis {size_mb:.1f} MB, above the {threshold_mb} MB warning threshold.\n\nLarge OPUS files may contain large spectral DataSeries or embedded images and may require more memory and time to load.\n\nDo you want to continue?",
+    "large_opus_list_title": "Large OPUS files",
+    "large_opus_list_confirm": "The {origin} contains {count} OPUS file(s) larger than {threshold_mb} MB.\n\nThese files may contain large spectral DataSeries or embedded images and may require more memory and time when opened.\n\nDo you want to continue?",
 
     "all_supported_files": "All supported files",
     "opus_numeric_extension": "OPUS / numeric extension",
@@ -124,9 +156,11 @@ UI_TEXT = {
     "file_label": "File",
     "unknown_error": "Unknown error",
     "spectrum_color_title": "Spectrum color",
+    "invalid_line_width_title": "Invalid line width",
+    "invalid_line_width_message": "Invalid line_width value in SpectraViewer.ini.\n\nAllowed range: 0.1–5.0.\nDefault value 1.5 will be used.",
     "about_window_title": "About",
     "about_dnd_line": "\t• Drag&Drop – drop a file or folder onto the window\n",
-    "about_text": "Version: {version} © {author}, {year}\nDevelopment: {author}, OpenAI\n\nSupported spectrum formats:\n\t• OPUS (*.0–*.5)\n\t• JCAMP-DX (*.dx, *.jdx)\n\t• DPT (*.dpt)\n\nKeyboard shortcuts:\n\t• Ctrl+O – Open file\n\t• Ctrl+Shift+O – Open folder\n\t• Left / Right arrow – Previous / next spectrum\n\t• Ctrl+S – Save spectrum as image\n\t• Ctrl+Shift+C – Select / change spectrum color\n{dnd_line}\t• F1 – About\n\nUser guide: SpectraViewerMan_EN.pdf\n\nSettings are saved in SpectraViewer.ini. Delete this file to restore defaults.",
+    "about_text": "Version: {version} © {author}, {year}\nDevelopment: {author}, OpenAI\n\nSupported spectrum formats:\n\t• OPUS (*.0, *.1, …)\n\t• JCAMP-DX (*.dx, *.jdx)\n\t• DPT (*.dpt)\n\nKeyboard shortcuts:\n\t• Ctrl+O – Open file\n\t• Ctrl+Shift+O – Open folder\n\t• Left / Right arrow – Previous / next file\n\t• Page Up / Page Down – Jump 25 files backward / forward\n\t• Home / End – First / last file\n\t• Up / Down arrow – Previous / next spectrum in DataSeries\n\t• Ctrl+S – Save spectrum as image\n\t• Ctrl+Shift+C – Select / change spectrum color\n{dnd_line}\t• F1 – About\n\nUser guide: SpectraViewerMan_EN.pdf\n\nSettings are saved in SpectraViewer.ini. Delete this file to restore defaults.",
     "save_message_title": "Save",
     "no_loaded_spectrum": "No spectrum is loaded.",
     "save_plot_title": "Save plot",
@@ -361,6 +395,50 @@ def normalize_metadata_encoding(value: str) -> str:
     value = (value or DEFAULT_METADATA_ENCODING).strip()
     return value if value in ENCODING_VALUE_TO_LABEL else DEFAULT_METADATA_ENCODING
 
+def parse_line_width(value):
+    """Return (line_width, is_valid) for a manually editable INI value."""
+    try:
+        # Accept both decimal point and decimal comma in manually edited INI files.
+        width = float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return DEFAULT_LINE_WIDTH, False
+
+    if not np.isfinite(width) or width < MIN_LINE_WIDTH or width > MAX_LINE_WIDTH:
+        return DEFAULT_LINE_WIDTH, False
+
+    return width, True
+
+def parse_warn_file_count(value):
+    """Return (warning_count, is_valid) for the advanced INI setting."""
+    try:
+        count = int(str(value).strip())
+    except (TypeError, ValueError):
+        return DEFAULT_WARN_FILE_COUNT, False
+
+    # Keep the warning threshold meaningful below the hard safety limit.
+    if count < 1 or count >= MAX_FILE_COUNT:
+        return DEFAULT_WARN_FILE_COUNT, False
+
+    return count, True
+
+
+def parse_large_opus_warn_mb(value):
+    """Return (warning_mb, is_valid) for the advanced INI setting."""
+    try:
+        mb = float(str(value).strip().replace(",", "."))
+    except (TypeError, ValueError):
+        return DEFAULT_LARGE_OPUS_WARN_MB, False
+
+    if not np.isfinite(mb) or mb <= 0 or mb > MAX_LARGE_OPUS_WARN_MB:
+        return DEFAULT_LARGE_OPUS_WARN_MB, False
+
+    # Keep whole-number values tidy in the INI and warning text.
+    if mb.is_integer():
+        mb = int(mb)
+
+    return mb, True
+
+
 def decode_meta_text(value, metadata_encoding: str = DEFAULT_METADATA_ENCODING):
     """
     Decode OPUS metadata text using a user-selected code page.
@@ -394,28 +472,35 @@ def decode_meta_text(value, metadata_encoding: str = DEFAULT_METADATA_ENCODING):
 
 
 
-def extract_opus_active_parameter_metadata(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING) -> Dict[str, str]:
+def extract_opus_active_parameter_metadata(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING, file_bytes: Optional[bytes] = None) -> Dict[str, str]:
     """
-    Extract active Sample Name / Sample Form values from OPUS binary parameter
-    records, without using the OPUS history / COMMAND_LINE area.
+    Extract the active Sample Name / Sample Form values from binary OPUS
+    parameter records, without using the OPUS history / COMMAND_LINE area.
 
-    OPUS history can contain temporary ParameterEditor / AddInfo values that
-    were later reverted by "Undo Changes". Those text fragments remain present
-    in the file, but they are not active metadata. Therefore this helper only
-    considers binary OPUS parameter records such as:
+    OPUS files may contain several binary SNM/SFM parameter clusters. Metadata
+    edits performed by OPUS (including MTX/INF macros) append a new parameter
+    cluster instead of necessarily overwriting the old one. Undo operations may
+    likewise append another cluster containing the restored values. Therefore
+    the last plausible SNM/SFM cluster is the active state.
+
+    Only genuine binary parameter records are considered, for example:
 
         SNM\x00\x02\x00...<NUL-terminated text>
         SFM\x00\x02\x00...<NUL-terminated text>
 
-    In edited OPUS files the active parameter block has been observed before
-    older/reference parameter blocks, so the first plausible SNM/SFM cluster is
-    used. This avoids the earlier "last text occurrence wins" problem while
-    keeping reverted history edits out of the displayed metadata.
+    Text fragments in OPUS history are deliberately ignored.
+
+    If *file_bytes* is supplied, reuse that already-read OPUS binary buffer.
+    This keeps the current SpectraViewer optimization for large OPUS/DataSeries
+    files and avoids reading the same file again for metadata extraction.
     """
-    try:
-        data = Path(path).read_bytes()
-    except Exception:
-        return {}
+    if file_bytes is None:
+        try:
+            data = Path(path).read_bytes()
+        except Exception:
+            return {}
+    else:
+        data = file_bytes
 
     def iter_text_records(key: bytes):
         marker = key + b"\x00\x02\x00"
@@ -432,9 +517,7 @@ def extract_opus_active_parameter_metadata(path: str, metadata_encoding: str = D
                 continue
 
             value_end = data.find(b"\x00", value_start)
-            if value_end < 0:
-                continue
-            if value_end == value_start:
+            if value_end < 0 or value_end == value_start:
                 continue
             if value_end - value_start > 4096:
                 continue
@@ -457,26 +540,204 @@ def extract_opus_active_parameter_metadata(path: str, metadata_encoding: str = D
     if not records:
         return {}
 
-    # Use the first plausible active cluster. A generous window keeps paired
-    # SNM/SFM values together, but avoids drifting into later history/reference
-    # records.
-    first_pos = records[0][0]
-    cluster_limit = first_pos + 4096
+    # Split records into nearby parameter clusters. SNM and SFM belonging to
+    # the same OPUS parameter block are normally close together, while a later
+    # metadata edit creates another cluster farther on in the file.
+    cluster_gap = 4096
+    clusters = []
+    current_cluster = []
+    previous_pos = None
+
+    for record in records:
+        pos = record[0]
+        if previous_pos is not None and pos - previous_pos > cluster_gap:
+            if current_cluster:
+                clusters.append(current_cluster)
+            current_cluster = []
+        current_cluster.append(record)
+        previous_pos = pos
+
+    if current_cluster:
+        clusters.append(current_cluster)
+
+    # OPUS appends the newest active parameter state. This also handles Undo:
+    # the restored state is written as the newest binary parameter cluster,
+    # while obsolete values remain only in earlier clusters/history.
+    active_cluster = clusters[-1]
 
     result: Dict[str, str] = {}
-    for pos, key, value in records:
-        if pos > cluster_limit:
-            break
-        if key not in result:
-            result[key] = value
-        if "SNM" in result and "SFM" in result:
-            break
+    for _pos, key, value in active_cluster:
+        # If a malformed block contains a duplicate key, keep its last value.
+        result[key] = value
 
     return result
 
-def is_opus_like(path: str) -> bool:
+
+def _decode_opus_binary_text(raw_value: bytes, metadata_encoding: str = DEFAULT_METADATA_ENCODING) -> str:
+    """Decode a NUL-terminated OPUS binary text value using the metadata setting."""
+    raw_value = (raw_value or b"").split(b"\x00", 1)[0]
+    if not raw_value:
+        return ""
+
+    # Keep the same conversion path as the existing SNM/SFM binary fallback.
+    # In Auto mode this preserves the OPUS/default byte interpretation; a manual
+    # code page selection (e.g. cp1250) is applied by decode_meta_text().
+    text_value = raw_value.decode("latin-1", errors="replace")
+    return decode_meta_text(text_value, metadata_encoding) or ""
+
+
+def _read_opus_string_record(data: bytes, pos: int, metadata_encoding: str = DEFAULT_METADATA_ENCODING) -> Optional[str]:
+    """Read one OPUS string parameter record starting at *pos*, or return None."""
+    if pos < 0 or pos + 8 > len(data):
+        return None
+
+    # OPUS parameter record: 3-byte key + NUL + 2-byte type + 2-byte size.
+    # Type 2 is a text parameter; size is stored in 16-bit words.
+    if data[pos + 3:pos + 4] != b"\x00":
+        return None
+    param_type = int.from_bytes(data[pos + 4:pos + 6], "little", signed=False)
+    if param_type != 2:
+        return None
+
+    size_words = int.from_bytes(data[pos + 6:pos + 8], "little", signed=False)
+    payload_size = size_words * 2
+    value_start = pos + 8
+    value_end = value_start + payload_size
+    if payload_size < 0 or value_end > len(data):
+        return None
+
+    return _decode_opus_binary_text(data[value_start:value_end], metadata_encoding)
+
+
+def extract_opus_info_fields(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING, file_bytes: Optional[bytes] = None) -> List[Dict[str, str]]:
+    """
+    Extract the active OPUS INFO mask field definitions (T01..T99) together
+    with their values (I01..I99) directly from the binary INFO parameter block.
+
+    Important: after INFO editing OPUS may omit the MOP text record that was
+    present in the original file and instead store a HIS change-history record
+    before END. Therefore MOP must not be required to identify the active block.
+
+    The active INFO block is located from a structured INP text parameter and
+    bounded by the first structured END record that follows it. Only structured
+    Tnn/Inn text parameter records inside that block are accepted. Plain-text
+    copies inside HIS / COMMAND_LINE do not match the binary record signature.
+
+    Returns every defined field in mask order, including empty values. Each item
+    contains: code (Inn), label (Tnn without an optional 'TEXT:' prefix), value.
+    """
+    if file_bytes is None:
+        try:
+            data = Path(path).read_bytes()
+        except Exception:
+            return []
+    else:
+        data = file_bytes
+
+    inp_marker = b"INP\x00\x02\x00"
+    end_marker = b"END\x00\x00\x00\x00\x00"
+    field_pattern = re.compile(rb"([TI])(\d{2})\x00\x02\x00")
+
+    search_from = 0
+    while True:
+        inp_pos = data.find(inp_marker, search_from)
+        if inp_pos < 0:
+            break
+        search_from = inp_pos + 1
+
+        # INFO blocks normally also contain INM/IFN near INP. Requiring at least
+        # one of them makes accidental INP-like byte sequences less plausible,
+        # while still keeping the parser tolerant of older/nonstandard files.
+        provisional_end = min(len(data), inp_pos + 65536)
+        end_pos = data.find(end_marker, inp_pos + 8, provisional_end)
+        if end_pos < 0:
+            end_pos = provisional_end
+
+        inm_pos = data.find(b"INM\x00\x02\x00", inp_pos, min(end_pos, inp_pos + 1024))
+        ifn_pos = data.find(b"IFN\x00\x02\x00", inp_pos, min(end_pos, inp_pos + 1024))
+
+        markers = []
+        for match in field_pattern.finditer(data, inp_pos, end_pos):
+            pos = match.start()
+            kind = match.group(1).decode("ascii")
+            number = match.group(2).decode("ascii")
+            value = _read_opus_string_record(data, pos, metadata_encoding)
+            if value is not None:
+                markers.append((pos, kind, number, value))
+
+        if not markers:
+            continue
+
+        # If neither companion INFO parameter is present, accept the block only
+        # when it still contains a plausible Tnn/Inn pair.
+        if inm_pos < 0 and ifn_pos < 0:
+            nums_t = {number for _pos, kind, number, _value in markers if kind == "T"}
+            nums_i = {number for _pos, kind, number, _value in markers if kind == "I"}
+            if not (nums_t & nums_i):
+                continue
+
+        # Preserve mask order by the first appearance of each numeric field code.
+        ordered_numbers: List[str] = []
+        seen_numbers = set()
+        records: Dict[tuple, str] = {}
+
+        for _pos, kind, number, value in markers:
+            records[(kind, number)] = value
+            if number not in seen_numbers:
+                seen_numbers.add(number)
+                ordered_numbers.append(number)
+
+        fields: List[Dict[str, str]] = []
+        for number in ordered_numbers:
+            label = records.get(("T", number), "") or ""
+            value = records.get(("I", number), "") or ""
+
+            if not label and not value:
+                continue
+
+            if label.upper().startswith("TEXT:"):
+                label = label[5:]
+            label = label.strip() or f"I{number}"
+
+            fields.append({
+                "code": f"I{number}",
+                "label": label,
+                "value": value,
+            })
+
+        if fields:
+            return fields
+
+    return []
+
+def has_numeric_extension(path: str) -> bool:
     ext = Path(path).suffix
     return bool(ext) and ext[1:].isdigit()
+
+
+def has_opus_magic(path: str) -> bool:
+    """Cheap OPUS validation: read only the native 4-byte file signature."""
+    try:
+        with open(path, "rb") as f:
+            return f.read(4) == OPUS_MAGIC
+    except OSError:
+        return False
+
+
+def is_opus_like(path: str) -> bool:
+    # Numeric extension is necessary but not sufficient: files such as
+    # "ttx.1" or "something.7" must not be mistaken for native OPUS data.
+    return has_numeric_extension(path) and has_opus_magic(path)
+
+
+def is_large_opus_file(path: str, threshold_bytes: int) -> bool:
+    """Return True only for valid OPUS files above the supplied warning threshold."""
+    if not is_opus_like(path):
+        return False
+    try:
+        return os.path.getsize(path) > threshold_bytes
+    except OSError:
+        return False
 
 def is_jcamp_like(path: str) -> bool:
     return os.path.splitext(path)[1].lower() in (".dx", ".jdx")
@@ -486,6 +747,60 @@ def is_dpt_like(path: str) -> bool:
 
 def is_supported_spectrum(path: str) -> bool:
     return is_opus_like(path) or is_jcamp_like(path) or is_dpt_like(path)
+
+def opus_series_as_2d(series):
+    """Return OPUS DataSeries as (x, y2d), with rows = spectra."""
+    x = np.asarray(series.x, dtype=float).ravel()
+    y = np.asarray(series.y, dtype=float)
+
+    if y.ndim != 2:
+        raise ValueError(f"Expected a 2D OPUS DataSeries, got y shape {y.shape}.")
+
+    if y.shape[1] == len(x):
+        return x, y
+
+    # Defensive fallback for an unexpectedly transposed series.
+    if y.shape[0] == len(x):
+        return x, y.T
+
+    raise ValueError(
+        f"Cannot match OPUS DataSeries y shape {y.shape} to x length {len(x)}."
+    )
+
+
+def opus_expand_store_table(store_table, n_spectra: int) -> List[int]:
+    """Expand brukeropus store_table ranges to original acquisition indices."""
+    if store_table is None:
+        return list(range(1, n_spectra + 1))
+
+    try:
+        raw = store_table.tolist() if hasattr(store_table, "tolist") else store_table
+
+        if (
+            isinstance(raw, (list, tuple))
+            and len(raw) == 2
+            and all(isinstance(v, (int, np.integer)) for v in raw)
+        ):
+            pairs = [raw]
+        else:
+            pairs = list(raw)
+
+        indices: List[int] = []
+        for pair in pairs:
+            if len(pair) != 2:
+                raise ValueError
+            start, stop = int(pair[0]), int(pair[1])
+            if stop < start:
+                raise ValueError
+            indices.extend(range(start, stop + 1))
+
+        if len(indices) == n_spectra:
+            return indices
+    except Exception:
+        pass
+
+    return list(range(1, n_spectra + 1))
+
 
 @dataclass
 class Spectrum:
@@ -502,35 +817,96 @@ def read_opus_file(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING
         raise RuntimeError(UI_TEXT["runtime_opus_not_available"])
 
     opus = opus_read(path)  # OPUSFile
-    keys = list(getattr(opus, "data_keys", []) or [])
+    data_keys = list(getattr(opus, "data_keys", []) or [])
+    series_keys = list(getattr(opus, "series_keys", []) or [])
 
-    # Preferred spectrum data types.
-    candidates = [("a", "Absorbance"), ("ab", "Absorbance"), ("tr", "Transmittance"),
-                  ("sm", "Single-channel sample"), ("rf", "Single-channel reference")]
+    # Read the binary file only once for direct metadata helpers (SNM/SFM + INFO).
+    # This avoids an extra full-file read when browsing large OPUS files.
+    try:
+        opus_binary = Path(path).read_bytes()
+    except Exception:
+        opus_binary = None
 
     spec_obj = None
     spec_label = None
+    selected_key = None
+    series_y = None
+    series_store_indices = None
 
-    for k, label in candidates:
-        if k in keys and hasattr(opus, k):
-            o = getattr(opus, k)
-            if hasattr(o, "x") and hasattr(o, "y"):
-                spec_obj, spec_label = o, label
-                break
+    # 1) Prefer a supported processed DataSeries when present.
+    # This is the key change for line mappings: e.g. an Absorbance DataSeries
+    # takes precedence over the single reference spectrum ('rf') that may also
+    # be stored in the same OPUS file.
+    for key in OPUS_SPECTRAL_TYPE_PRIORITY:
+        if key in series_keys and hasattr(opus, key):
+            candidate = getattr(opus, key)
+            if not (hasattr(candidate, "x") and hasattr(candidate, "y")):
+                continue
+            try:
+                x, y2d = opus_series_as_2d(candidate)
+            except Exception:
+                continue
+            if y2d.shape[0] < 1:
+                continue
 
+            spec_obj = candidate
+            selected_key = key
+            spec_label = SUPPORTED_OPUS_SPECTRAL_TYPES[key]
+            series_y = y2d
+            series_store_indices = opus_expand_store_table(
+                getattr(candidate, "store_table", None),
+                y2d.shape[0],
+            )
+            break
+
+    # 2) Otherwise prefer a supported single processed spectrum.
     if spec_obj is None:
-        for k in keys:
-            if hasattr(opus, k):
-                o = getattr(opus, k)
-                if hasattr(o, "x") and hasattr(o, "y"):
-                    spec_obj, spec_label = o, str(k)
+        for key in OPUS_SPECTRAL_TYPE_PRIORITY:
+            if key in data_keys and hasattr(opus, key):
+                candidate = getattr(opus, key)
+                if hasattr(candidate, "x") and hasattr(candidate, "y"):
+                    spec_obj = candidate
+                    selected_key = key
+                    spec_label = SUPPORTED_OPUS_SPECTRAL_TYPES[key]
+                    break
+
+    # 3) Backward-compatible fallbacks for OPUS files that contain no supported
+    # processed spectrum. Keep the old ability to display sample/reference
+    # single-channel data or another 1D x/y block rather than rejecting the file.
+    if spec_obj is None:
+        fallback_candidates = [
+            ("sm", "Single-channel sample"),
+            ("rf", "Single-channel reference"),
+        ]
+        for key, label in fallback_candidates:
+            if key in data_keys and hasattr(opus, key):
+                candidate = getattr(opus, key)
+                if hasattr(candidate, "x") and hasattr(candidate, "y"):
+                    spec_obj, selected_key, spec_label = candidate, key, label
                     break
 
     if spec_obj is None:
-        raise RuntimeError(UI_TEXT["runtime_no_xy"] + str(keys))
+        for key in data_keys:
+            if hasattr(opus, key):
+                candidate = getattr(opus, key)
+                if hasattr(candidate, "x") and hasattr(candidate, "y"):
+                    spec_obj, selected_key, spec_label = candidate, key, str(key)
+                    break
 
-    x = np.asarray(spec_obj.x, dtype=float)
-    y = np.asarray(spec_obj.y, dtype=float)
+    if spec_obj is None:
+        raise RuntimeError(
+            UI_TEXT["runtime_no_xy"]
+            + str(data_keys)
+            + "; series_keys="
+            + str(series_keys)
+        )
+
+    if series_y is not None:
+        x = np.asarray(spec_obj.x, dtype=float).ravel()
+        y = np.asarray(series_y[0], dtype=float)
+    else:
+        x = np.asarray(spec_obj.x, dtype=float).ravel()
+        y = np.asarray(spec_obj.y, dtype=float).ravel()
 
     snm = decode_meta_text(getattr(opus, "snm", "") or "", metadata_encoding) or ""
     sfm = decode_meta_text(getattr(opus, "sfm", "") or "", metadata_encoding) or ""
@@ -538,7 +914,9 @@ def read_opus_file(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING
     # OPUS files may contain multiple SNM/SFM occurrences after metadata editing.
     # Use active binary parameter records, not history / COMMAND_LINE text,
     # because history may contain changes later reverted by Undo Changes.
-    active_meta = extract_opus_active_parameter_metadata(path, metadata_encoding)
+    active_meta = extract_opus_active_parameter_metadata(
+        path, metadata_encoding, file_bytes=opus_binary
+    )
     if "SNM" in active_meta:
         snm = active_meta["SNM"]
     if "SFM" in active_meta:
@@ -548,14 +926,41 @@ def read_opus_file(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING
     if sfm or snm:
         title = (sfm + " - " + snm).strip(" -")
 
+    info_fields = extract_opus_info_fields(
+        path, metadata_encoding, file_bytes=opus_binary
+    )
+
     meta = {
         "sample_name": snm,
         "sample_form": sfm,
-        "data_keys": keys,
-        "y_label_hint": spec_label or ""
+        "data_keys": data_keys,
+        "series_keys": series_keys,
+        "selected_opus_key": selected_key or "",
+        "y_label_hint": spec_label or "",
+        "info_fields": info_fields,
     }
 
-    return Spectrum(x=x, y=y, title=title, xunit="cm⁻¹", yunit=spec_label or "", meta=meta, path=path)
+    if series_y is not None:
+        meta.update({
+            "series_y": series_y,
+            "series_index": 0,
+            "series_count": int(series_y.shape[0]),
+            "series_key": selected_key or "",
+            "series_label": spec_label or "",
+            "series_store_indices": series_store_indices or list(
+                range(1, int(series_y.shape[0]) + 1)
+            ),
+        })
+
+    return Spectrum(
+        x=x,
+        y=y,
+        title=title,
+        xunit="cm⁻¹",
+        yunit=spec_label or "",
+        meta=meta,
+        path=path,
+    )
 
 def read_jcamp(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING) -> Spectrum:
     import re
@@ -738,7 +1143,37 @@ class App(_BaseTk):
         self.invert_x_var = tk.BooleanVar(value=self.get_setting_bool("view", "invert_x", False))
         self.crosshair_var = tk.BooleanVar(value=self.get_setting_bool("view", "crosshair", True))
         self.status_var = tk.StringVar(value=UI_TEXT["initial_status"])
+        self.series_counter_var = tk.StringVar(value="1/1")
         self.line_color = self.get_setting("view", "line_color", DEFAULT_LINE_COLOR) or DEFAULT_LINE_COLOR
+        raw_line_width = self.get_setting("view", "line_width", str(DEFAULT_LINE_WIDTH))
+        self.line_width, self._line_width_valid = parse_line_width(raw_line_width)
+
+        raw_warn_file_count = self.get_setting(
+            "advanced", "warn_file_count", str(DEFAULT_WARN_FILE_COUNT)
+        )
+        self.warn_file_count, self._warn_file_count_valid = parse_warn_file_count(
+            raw_warn_file_count
+        )
+
+        raw_large_opus_warn_mb = self.get_setting(
+            "advanced", "large_opus_warn_mb", str(DEFAULT_LARGE_OPUS_WARN_MB)
+        )
+        self.large_opus_warn_mb, self._large_opus_warn_mb_valid = parse_large_opus_warn_mb(
+            raw_large_opus_warn_mb
+        )
+        self.large_opus_warn_bytes = int(float(self.large_opus_warn_mb) * 1024 * 1024)
+
+        if not self._warn_file_count_valid:
+            print(
+                "Invalid [advanced] warn_file_count in SpectraViewer.ini; "
+                f"default {DEFAULT_WARN_FILE_COUNT} will be used."
+            )
+        if not self._large_opus_warn_mb_valid:
+            print(
+                "Invalid [advanced] large_opus_warn_mb in SpectraViewer.ini; "
+                f"default {DEFAULT_LARGE_OPUS_WARN_MB} MB will be used."
+            )
+
         self.metadata_encoding = normalize_metadata_encoding(
             self.get_setting("metadata", "encoding", DEFAULT_METADATA_ENCODING)
         )
@@ -746,9 +1181,18 @@ class App(_BaseTk):
         self.files: List[str] = []
         self.idx: int = -1
         self.current: Optional[Spectrum] = None
+        self.info_win = None
+        self.info_text = None
+
+        # Large OPUS warnings are intentionally once-per-file per session.
+        # A folder/list confirmation approves every large OPUS file that was
+        # included in that confirmation, so navigation does not nag again.
+        self._approved_large_opus_paths = set()
         self._build_ui()
         self._bind_keys()
         self._setup_dnd()  # Drag & Drop init (if available)
+        if not self._line_width_valid:
+            self.after(0, self.show_invalid_line_width_warning)
         if bool(self.single_file_var.get()):
             self.recursive_chk.state(["disabled"])
         self.update_idletasks()  # segít a pontosabb méretekhez
@@ -772,6 +1216,14 @@ class App(_BaseTk):
 
         # Restore the last opened file/folder after the UI and saved settings are ready.
         self.after(100, self.restore_last_path_on_startup)
+
+
+    def show_invalid_line_width_warning(self):
+        messagebox.showwarning(
+            UI_TEXT["invalid_line_width_title"],
+            UI_TEXT["invalid_line_width_message"],
+            parent=self,
+        )
 
     # --- Settings / INI memory ---
     def load_settings(self) -> configparser.ConfigParser:
@@ -809,6 +1261,7 @@ class App(_BaseTk):
 
         cfg["view"] = {
             "line_color": str(self.line_color or DEFAULT_LINE_COLOR),
+            "line_width": str(self.line_width),
             "crosshair": str(bool(self.crosshair_var.get())).lower(),
             "invert_x": str(bool(self.invert_x_var.get())).lower(),
         }
@@ -830,6 +1283,11 @@ class App(_BaseTk):
 
         cfg["metadata"] = {
             "encoding": normalize_metadata_encoding(self.metadata_encoding),
+        }
+
+        cfg["advanced"] = {
+            "warn_file_count": str(self.warn_file_count),
+            "large_opus_warn_mb": str(self.large_opus_warn_mb),
         }
 
         try:
@@ -867,7 +1325,7 @@ class App(_BaseTk):
                 self.status_var.set(UI_TEXT["last_path_no_spectrum_status"])
                 return
 
-            if len(files) > WARN_FILE_COUNT:
+            if len(files) > self.warn_file_count:
                 self.status_var.set(UI_TEXT["last_path_too_many_status"].format(count=len(files)))
                 return
 
@@ -897,7 +1355,7 @@ class App(_BaseTk):
                 self.status_var.set(UI_TEXT["last_path_no_spectrum_status"])
                 return
 
-            if len(files) > WARN_FILE_COUNT:
+            if len(files) > self.warn_file_count:
                 self.status_var.set(UI_TEXT["last_path_too_many_status"].format(count=len(files)))
                 return
 
@@ -931,8 +1389,8 @@ class App(_BaseTk):
         reg(self)
 
         # after UI is built, these exist
-        if getattr(self, "header", None) is not None:
-            reg(self.header)
+        for header_field in getattr(self, "header_fields", []):
+            reg(header_field)
         if getattr(self, "canvas", None) is not None:
             reg(self.canvas.get_tk_widget())
 
@@ -999,9 +1457,11 @@ class App(_BaseTk):
         top.grid(row=0, column=0, sticky="ew")
 
         ttk.Label(top, text=UI_TEXT["path_label"]).pack(side=tk.LEFT)
-        e = ttk.Entry(top, textvariable=self.folder_var, width=65)
-        e.pack(side=tk.LEFT, padx=(6, 6), fill=tk.X, expand=True)
-        e.bind("<Return>", self.on_path_enter)
+        self.path_entry = ttk.Entry(top, textvariable=self.folder_var, width=65)
+        self.path_entry.pack(side=tk.LEFT, padx=(6, 6), fill=tk.X, expand=True)
+        self.path_entry.bind("<Return>", self.on_path_enter)
+        self.path_entry.bind("<Control-c>", self._copy_widget_selection_to_clipboard)
+        self.path_entry.bind("<Control-C>", self._copy_widget_selection_to_clipboard)
 
         self.fldr_btn = ttk.Button(top, text=UI_TEXT["folder_button"], command=self.choose_folder)
         self.fldr_btn.pack(side=tk.LEFT, padx=(0, 8))
@@ -1062,16 +1522,101 @@ class App(_BaseTk):
         mid.grid_rowconfigure(1, weight=1)
         mid.grid_columnconfigure(0, weight=1)
 
-        self.header = tk.Text(mid, height=3, wrap="none", borderwidth=0)
-        self.header.grid(row=0, column=0, sticky="ew", pady=(0, 2))
-        self.header.configure(font=("Segoe UI", 12), state="disabled", padx=8, pady=0, highlightthickness=0)
+        # Three independent, copyable read-only header fields.
+        # Keeping them separate makes filename / SNM / SFM individually reachable
+        # in the TAB order while preserving the previous flat, three-line appearance.
+        self.header_frame = ttk.Frame(mid)
+        self.header_frame.grid(row=0, column=0, sticky="ew", pady=(0, 2))
+        self.header_frame.grid_columnconfigure(0, weight=1)
+
+        self.header_fields = []
+        for row in range(3):
+            field = tk.Text(
+                self.header_frame,
+                height=1,
+                wrap="none",
+                borderwidth=0,
+                takefocus=1,
+                font=("Segoe UI", 12),
+                padx=8,
+                pady=0,
+                highlightthickness=0,
+            )
+            field.grid(row=row, column=0, sticky="ew")
+            field.configure(state="disabled")
+            field.bind("<FocusIn>", self._on_header_focus_in)
+            field.bind("<FocusOut>", self._on_header_focus_out)
+            field.bind("<Tab>", self._focus_next_widget)
+            field.bind("<Shift-Tab>", self._focus_prev_widget)
+            field.bind("<ISO_Left_Tab>", self._focus_prev_widget)
+            field.bind("<Control-c>", self._copy_widget_selection_to_clipboard)
+            field.bind("<Control-C>", self._copy_widget_selection_to_clipboard)
+
+            # Header fields are read-only/copyable, not text editors.
+            # Plain navigation keys therefore keep controlling SpectraViewer.
+            # Widget-level bindings run before the Text class bindings, so
+            # Home/End/arrows do not first move the invisible insertion cursor
+            # or destroy the visible full-field selection.
+            field.bind("<Left>", self._on_left)
+            field.bind("<Right>", self._on_right)
+            field.bind("<Up>", self._on_up)
+            field.bind("<Down>", self._on_down)
+            field.bind("<Prior>", self._on_page_up)       # Page Up
+            field.bind("<Next>", self._on_page_down)      # Page Down
+            field.bind("<Home>", self._on_home)
+            field.bind("<End>", self._on_end)
+
+            self.header_fields.append(field)
 
         self.canvas = FigureCanvasTkAgg(fig, master=mid)
         self.canvas.get_tk_widget().grid(row=1, column=0, sticky="nsew")
 
-        toolbar = ToolbarNoSave(self.canvas, mid)
+        # Bottom row: Matplotlib toolbar on the left, INFO helper button on the right.
+        toolbar_row = ttk.Frame(mid)
+        toolbar_row.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+
+        toolbar = ToolbarNoSave(self.canvas, toolbar_row)
         toolbar.update()
-        toolbar.grid(row=2, column=0, sticky="ew", pady=(2, 0))
+        toolbar.pack(side=tk.LEFT, fill=tk.X, expand=True)
+
+        self.info_btn = ttk.Button(
+            toolbar_row,
+            text=UI_TEXT["info_button"],
+            command=self.show_info_window,
+            width=6,
+        )
+        self.info_btn.pack(side=tk.RIGHT, padx=(6, 4), pady=(0, 1))
+        self.info_btn.state(["disabled"])
+
+        # Compact DataSeries navigation. It is always visible so the toolbar
+        # geometry remains stable; for ordinary single spectra the arrows are
+        # disabled and the counter reads 1/1.
+        self.series_next_btn = ttk.Button(
+            toolbar_row,
+            text="▶",
+            command=self.series_next,
+            width=3,
+        )
+        self.series_next_btn.pack(side=tk.RIGHT, padx=(2, 0), pady=(0, 1))
+
+        self.series_counter_lbl = ttk.Label(
+            toolbar_row,
+            textvariable=self.series_counter_var,
+            width=7,
+            anchor="center",
+        )
+        self.series_counter_lbl.pack(side=tk.RIGHT, padx=(2, 2))
+
+        self.series_prev_btn = ttk.Button(
+            toolbar_row,
+            text="◀",
+            command=self.series_prev,
+            width=3,
+        )
+        self.series_prev_btn.pack(side=tk.RIGHT, padx=(6, 0), pady=(0, 1))
+
+        self.series_prev_btn.state(["disabled"])
+        self.series_next_btn.state(["disabled"])
 
         # crosshair
         self.vline = self.ax.axvline(np.nan, color="black", linewidth=0.5)
@@ -1089,10 +1634,12 @@ class App(_BaseTk):
     def _bind_keys(self):
         self.bind_all("<Left>", self._on_left)
         self.bind_all("<Right>", self._on_right)
-        self.bind("<Prior>", lambda e: self.jump(-25))              # PageUp
-        self.bind("<Next>", lambda e: self.jump(+25))               # PageDown
-        self.bind("<Home>", lambda e: self.first())
-        self.bind("<End>", lambda e: self.last())
+        self.bind_all("<Up>", self._on_up)
+        self.bind_all("<Down>", self._on_down)
+        self.bind("<Prior>", self._on_page_up)                       # PageUp
+        self.bind("<Next>", self._on_page_down)                      # PageDown
+        self.bind("<Home>", self._on_home)
+        self.bind("<End>", self._on_end)
         self.bind_all("<Control-s>", self._on_ctrl_s)
         self.bind_all("<Control-S>", self._on_ctrl_s)
         self.bind_all("<Control-Shift-o>", self._on_ctrl_shift_o)   # mappa
@@ -1101,9 +1648,68 @@ class App(_BaseTk):
         self.bind_all("<Control-O>", self._on_ctrl_o)
         self.bind_all("<Control-Shift-c>", self._on_ctrl_shift_c)   # colour
         self.bind_all("<Control-Shift-C>", self._on_ctrl_shift_c)
+        self.bind_all("<Control-i>", self._on_ctrl_i)     # info block viewer
+        self.bind_all("<Control-I>", self._on_ctrl_i)
         self.bind_all("<F1>", self._on_F1)                          # about
 
+    def _navigation_key_is_for_text_widget(self, event=None) -> bool:
+        """
+        Return True when a navigation key belongs to a focused text-entry widget.
+
+        Global SpectraViewer navigation must not steal Left/Right/Up/Down,
+        Page Up/Page Down or Home/End while the user is editing/navigating text
+        (e.g. Path field, INFO text, metadata encoding combobox).
+        """
+        widget = getattr(event, "widget", None)
+        if widget is None:
+            return False
+
+        # The three read-only/copyable header Text widgets are special:
+        # when they have focus, navigation keys must still control SpectraViewer.
+        if widget in getattr(self, "header_fields", []):
+            return False
+
+        try:
+            widget_class = widget.winfo_class()
+        except Exception:
+            return False
+
+        return widget_class in {
+            "Entry",
+            "TEntry",
+            "Text",
+            "TCombobox",
+            "Spinbox",
+            "TSpinbox",
+        }
+
+    def _on_page_up(self, event=None):
+        if self._navigation_key_is_for_text_widget(event):
+            return
+        self.jump(-25)
+        return "break"
+
+    def _on_page_down(self, event=None):
+        if self._navigation_key_is_for_text_widget(event):
+            return
+        self.jump(+25)
+        return "break"
+
+    def _on_home(self, event=None):
+        if self._navigation_key_is_for_text_widget(event):
+            return
+        self.first()
+        return "break"
+
+    def _on_end(self, event=None):
+        if self._navigation_key_is_for_text_widget(event):
+            return
+        self.last()
+        return "break"
+
     def _on_left(self, event=None):
+        if self._navigation_key_is_for_text_widget(event):
+            return
         if not getattr(self, "prev_btn", None):
             return
         if "disabled" in self.prev_btn.state():
@@ -1114,6 +1720,8 @@ class App(_BaseTk):
         return "break"
 
     def _on_right(self, event=None):
+        if self._navigation_key_is_for_text_widget(event):
+            return
         if not getattr(self, "next_btn", None):
             return
         if "disabled" in self.next_btn.state():
@@ -1121,6 +1729,34 @@ class App(_BaseTk):
         self.next_btn.state(['pressed'])
         self.next_btn.after(150, lambda: self.next_btn.state(['!pressed']))
         self.next_btn.invoke()
+        return "break"
+
+    def _on_up(self, event=None):
+        if self._navigation_key_is_for_text_widget(event):
+            return
+        if not getattr(self, "series_prev_btn", None):
+            return
+        if "disabled" in self.series_prev_btn.state():
+            return "break"
+        self.series_prev_btn.state(["pressed"])
+        self.series_prev_btn.after(
+            150, lambda: self.series_prev_btn.state(["!pressed"])
+        )
+        self.series_prev_btn.invoke()
+        return "break"
+
+    def _on_down(self, event=None):
+        if self._navigation_key_is_for_text_widget(event):
+            return
+        if not getattr(self, "series_next_btn", None):
+            return
+        if "disabled" in self.series_next_btn.state():
+            return "break"
+        self.series_next_btn.state(["pressed"])
+        self.series_next_btn.after(
+            150, lambda: self.series_next_btn.state(["!pressed"])
+        )
+        self.series_next_btn.invoke()
         return "break"
 
     def _on_ctrl_s(self, event=None):
@@ -1155,6 +1791,14 @@ class App(_BaseTk):
         self.clr_btn.invoke()
         #return "break"
 
+    def _on_ctrl_i(self, event=None):
+        if not getattr(self, "info_btn", None):
+            return
+        self.info_btn.state(['pressed'])
+        self.info_btn.after(150, lambda: self.info_btn.state(['!pressed']))
+        self.info_btn.invoke()
+        #return "break"
+
     def _on_F1(self, event=None):
         if not getattr(self, "about_btn", None):
             return
@@ -1186,13 +1830,98 @@ class App(_BaseTk):
             )
             return False
 
-        if count > WARN_FILE_COUNT:
+        if count > self.warn_file_count:
             return messagebox.askyesno(
                 UI_TEXT["too_many_files_confirm_title"],
                 UI_TEXT["too_many_files_confirm"].format(origin=origin, count=count)
             )
 
         return True
+
+    def _large_opus_path_key(self, path: str) -> str:
+        return os.path.normcase(os.path.abspath(os.path.expanduser(str(path))))
+
+    def get_unapproved_large_opus_files(self, paths):
+        out = []
+        seen = set()
+
+        for path in paths:
+            p = os.path.abspath(os.path.expanduser(str(path)))
+            key = self._large_opus_path_key(p)
+
+            if key in seen or key in self._approved_large_opus_paths:
+                continue
+            seen.add(key)
+
+            if is_large_opus_file(p, self.large_opus_warn_bytes):
+                out.append(p)
+
+        return out
+
+    def approve_large_opus_files(self, paths):
+        for path in paths:
+            self._approved_large_opus_paths.add(
+                self._large_opus_path_key(path)
+            )
+
+    def confirm_large_opus_files(
+        self,
+        paths,
+        origin: str,
+        preferred_single_path: str = "",
+    ) -> bool:
+        """
+        Warn before accepting large OPUS files.
+
+        If exactly one unapproved large file is the explicitly requested file,
+        show the individual warning. Otherwise show one aggregate warning for
+        the generated/selected list. Accepted files are not warned about again
+        during the current SpectraViewer session.
+        """
+        large_files = self.get_unapproved_large_opus_files(paths)
+        if not large_files:
+            return True
+
+        preferred_key = (
+            self._large_opus_path_key(preferred_single_path)
+            if preferred_single_path else ""
+        )
+
+        if (
+            len(large_files) == 1
+            and preferred_key
+            and self._large_opus_path_key(large_files[0]) == preferred_key
+        ):
+            path = large_files[0]
+            try:
+                size_mb = os.path.getsize(path) / (1024 * 1024)
+            except OSError:
+                size_mb = float(self.large_opus_warn_mb)
+
+            ok = messagebox.askyesno(
+                UI_TEXT["large_opus_title"],
+                UI_TEXT["large_opus_single_confirm"].format(
+                    filename=os.path.basename(path),
+                    size_mb=size_mb,
+                    threshold_mb=self.large_opus_warn_mb,
+                ),
+                parent=self,
+            )
+        else:
+            ok = messagebox.askyesno(
+                UI_TEXT["large_opus_list_title"],
+                UI_TEXT["large_opus_list_confirm"].format(
+                    origin=origin,
+                    count=len(large_files),
+                    threshold_mb=self.large_opus_warn_mb,
+                ),
+                parent=self,
+            )
+
+        if ok:
+            self.approve_large_opus_files(large_files)
+
+        return bool(ok)
 
     def choose_file(self):
         # Windows/Tk file dialog wildcards cannot precisely express the
@@ -1240,6 +1969,13 @@ class App(_BaseTk):
 
         if not self.confirm_file_count(len(valid_paths), UI_TEXT["selected_list_origin"]):
             return
+
+        if len(valid_paths) > 1:
+            if not self.confirm_large_opus_files(
+                valid_paths,
+                UI_TEXT["selected_list_origin"],
+            ):
+                return
 
         if invalid_paths:
             max_show = 8
@@ -1291,18 +2027,40 @@ class App(_BaseTk):
             messagebox.showwarning(UI_TEXT["warning_title"], UI_TEXT["no_loadable_file"])
 
     def on_path_enter(self, _evt=None):
-        self.open_path(self.folder_var.get().strip())
+        """
+        Open a manually entered path.
+
+        On success, move focus out of the editable Path field so navigation
+        shortcuts work immediately:
+          folder -> Folder… button
+          file   -> File… button
+
+        On invalid/unsupported/cancelled input, keep focus in Path because the
+        user will normally want to edit it.
+        """
+        result = self.open_path(self.folder_var.get().strip())
+
+        if result == "folder":
+            self.fldr_btn.focus_set()
+        elif result == "file":
+            self.file_btn.focus_set()
+        else:
+            path_entry = getattr(self, "path_entry", None)
+            if path_entry is not None:
+                path_entry.focus_set()
+
+        return "break"
 
     def open_path(self, path: str):
         if not path:
-            return
+            return None
 
         p = os.path.abspath(os.path.expanduser(path))
 
         # Invalid path.
         if not os.path.exists(p):
             messagebox.showwarning(UI_TEXT["invalid_path_title"], UI_TEXT["invalid_path_message"])
-            return
+            return None
 
         # Folder.
         if os.path.isdir(p):
@@ -1311,21 +2069,26 @@ class App(_BaseTk):
                     UI_TEXT["single_file_title"],
                     UI_TEXT["single_file_path_must_be_file"]
                 )
-                return
-            self.open_folder(p, recursive=self.recursive_var.get())
-            return
+                return None
+
+            if self.open_folder(p, recursive=self.recursive_var.get()):
+                return "folder"
+            return None
 
         # File with a valid format.
         if os.path.isfile(p):
             if not is_supported_spectrum(p):
                 messagebox.showwarning(UI_TEXT["unsupported_format_title"], UI_TEXT["unsupported_path_message"])
-                return
+                return None
 
             if bool(self.single_file_var.get()):
-                self.open_single_file(p)
+                ok = self.open_single_file(p)
             else:
-                self.open_file_with_context(p, recursive=self.recursive_var.get())
-            return
+                ok = self.open_file_with_context(p, recursive=self.recursive_var.get())
+
+            return "file" if ok else None
+
+        return None
 
     def get_active_file_path(self) -> str:
         """Return the currently displayed/selected spectrum path, if available."""
@@ -1358,6 +2121,15 @@ class App(_BaseTk):
             self.status_var.set(
                 UI_TEXT["context_reload_cancelled"]
             )
+            return False
+
+        if not self.confirm_large_opus_files(
+            files,
+            UI_TEXT["folder_context_origin"],
+            preferred_single_path=current_path,
+        ):
+            self.update_counter()
+            self.status_var.set(UI_TEXT["context_reload_cancelled"])
             return False
 
         self.folder_var.set(folder)
@@ -1402,7 +2174,7 @@ class App(_BaseTk):
             else:
                 self.status_var.set(UI_TEXT["single_file_disabled_restored_status"])
 
-    def open_single_file(self, filepath: str):
+    def open_single_file(self, filepath: str) -> bool:
         filepath = os.path.abspath(os.path.expanduser(str(filepath)))
 
         if not os.path.isfile(filepath):
@@ -1410,37 +2182,52 @@ class App(_BaseTk):
                 UI_TEXT["invalid_file_title"],
                 UI_TEXT["single_file_invalid_path"]
             )
-            return
+            return False
 
         if not is_supported_spectrum(filepath):
             messagebox.showwarning(UI_TEXT["unsupported_format_title"], UI_TEXT["unsupported_path_message"])
-            return
+            return False
+
+        if not self.confirm_large_opus_files(
+            [filepath],
+            UI_TEXT["selected_list_origin"],
+            preferred_single_path=filepath,
+        ):
+            return False
 
         folder = os.path.dirname(filepath)
         self.folder_var.set(folder)
         self.files = [filepath]
         self.idx = 0
         self.update_counter()
-        self.load_current()
-        self.status_var.set(UI_TEXT["single_file_title"] + f": {filepath}")
+        loaded = self.load_current()
+        if loaded:
+            self.status_var.set(UI_TEXT["single_file_title"] + f": {filepath}")
+        return bool(loaded)
 
-    def open_folder(self, folder: str, recursive: bool):
+    def open_folder(self, folder: str, recursive: bool) -> bool:
         folder = os.path.abspath(folder)
         files = scan_folder(folder, recursive=recursive)
 
         # No spectra found.
         if not files:
             messagebox.showwarning(UI_TEXT["no_match_title"], UI_TEXT["no_spectrum_at_path"])
-            return
+            return False
 
         if not self.confirm_file_count(len(files), UI_TEXT["opened_folder_origin"]):
-            return
+            return False
+
+        if not self.confirm_large_opus_files(
+            files,
+            UI_TEXT["opened_folder_origin"],
+        ):
+            return False
 
         self.folder_var.set(folder)
         self.files = files
         self.idx = 0
         self.update_counter()
-        self.load_current()
+        return bool(self.load_current())
 
     def open_dropped_items_as_playlist(self, paths, recursive=None):
         if bool(self.single_file_var.get()):
@@ -1493,6 +2280,12 @@ class App(_BaseTk):
         if not self.confirm_file_count(len(uniq), UI_TEXT["selected_list_origin"]):
             return
 
+        if not self.confirm_large_opus_files(
+            uniq,
+            UI_TEXT["selected_list_origin"],
+        ):
+            return
+
         if invalid_paths:
             max_show = 8
             shown = [os.path.basename(p) for p in invalid_paths[:max_show]]
@@ -1512,10 +2305,9 @@ class App(_BaseTk):
         self.load_current()
         self.status_var.set(UI_TEXT["custom_list_loaded"].format(count=len(self.files)))
 
-    def open_file_with_context(self, filepath: str, recursive: bool):
+    def open_file_with_context(self, filepath: str, recursive: bool) -> bool:
         if bool(self.single_file_var.get()):
-            self.open_single_file(filepath)
-            return
+            return bool(self.open_single_file(filepath))
 
         filepath = os.path.abspath(filepath)
         folder = os.path.dirname(filepath)
@@ -1525,10 +2317,17 @@ class App(_BaseTk):
         # Rare fallback case, but keep it handled.
         if not files:
             messagebox.showwarning(UI_TEXT["no_match_title"], UI_TEXT["no_spectrum_at_path"])
-            return
+            return False
 
         if not self.confirm_file_count(len(files), UI_TEXT["folder_context_origin"]):
-            return
+            return False
+
+        if not self.confirm_large_opus_files(
+            files,
+            UI_TEXT["folder_context_origin"],
+            preferred_single_path=filepath,
+        ):
+            return False
 
         self.folder_var.set(folder)
         self.files = files
@@ -1541,7 +2340,7 @@ class App(_BaseTk):
             self.idx = 0
 
         self.update_counter()
-        self.load_current()
+        return bool(self.load_current())
 
     def rescan(self):
         if bool(self.single_file_var.get()):
@@ -1561,7 +2360,7 @@ class App(_BaseTk):
 
         # Do not overwrite the current list before the file count check
         # has completed. This keeps the previous safe state intact
-        # if MAX_FILE_COUNT is exceeded or a WARN_FILE_COUNT prompt is rejected.
+        # if MAX_FILE_COUNT is exceeded or the configured file-count warning prompt is rejected.
         new_files = scan_folder(folder, requested_recursive)
 
         if not self.confirm_file_count(len(new_files), UI_TEXT["folder_context_origin_alt"]):
@@ -1573,6 +2372,15 @@ class App(_BaseTk):
             self.status_var.set(
                 UI_TEXT["loading_cancelled_previous_kept"]
             )
+            return
+
+        if not self.confirm_large_opus_files(
+            new_files,
+            UI_TEXT["folder_context_origin_alt"],
+        ):
+            self.recursive_var.set(not requested_recursive)
+            self.update_counter()
+            self.status_var.set("Loading cancelled: large OPUS files were not approved. The previous list remains active.")
             return
 
         self.files = new_files
@@ -1619,36 +2427,427 @@ class App(_BaseTk):
         self.ax.set_xlabel(UI_TEXT["axis_wavenumber"])
         self.ax.set_ylabel(UI_TEXT["axis_intensity"])
         self.canvas.draw_idle()
+        self.update_info_button_state()
+        self.refresh_info_window()
+        self.update_series_navigation_state()
+
+    def _select_header_field_contents(self, widget):
+        """Keep a focused read-only header visibly selected for easy copying."""
+        try:
+            widget.tag_remove(tk.SEL, "1.0", tk.END)
+            if widget.get("1.0", "end-1c"):
+                widget.tag_add(tk.SEL, "1.0", "end-1c")
+                widget.mark_set(tk.INSERT, "1.0")
+        except Exception:
+            pass
+
+    def _set_header_field(self, widget, text: str):
+        try:
+            had_focus = (self.focus_get() == widget)
+        except Exception:
+            had_focus = False
+
+        widget.configure(state="normal")
+        widget.delete("1.0", tk.END)
+        widget.insert("1.0", str(text or ""))
+        widget.configure(state="disabled")
+
+        if had_focus:
+            self.after_idle(
+                lambda w=widget: self._select_header_field_contents(w)
+                if self.focus_get() == w else None
+            )
 
     def clear_header(self):
-        self.header.configure(state="normal")
-        self.header.delete("1.0", tk.END)
-        self.header.configure(state="disabled")
+        self.show_header_lines([])
 
     def show_header_lines(self, lines):
-        clean = [str(x) for x in (lines or []) if str(x).strip()]
-        self.header.configure(state="normal")
-        self.header.delete("1.0", tk.END)
-        self.header.insert("1.0", "\n".join(clean))
-        self.header.configure(state="disabled")
+        values = [str(x or "") for x in (lines or [])][:3]
+        values.extend([""] * (3 - len(values)))
+        for widget, text in zip(self.header_fields, values):
+            self._set_header_field(widget, text)
+
+    def _set_persistent_clipboard_text(self, text: str) -> bool:
+        """
+        Put Unicode text on the OS clipboard so it survives application exit.
+
+        On Windows, use the native clipboard API. SetClipboardData transfers
+        ownership of the allocated HGLOBAL to Windows, so the text remains
+        available after SpectraViewer closes.
+
+        On other platforms, fall back to Tk's clipboard implementation.
+        """
+        text = str(text)
+
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                CF_UNICODETEXT = 13
+                GMEM_MOVEABLE = 0x0002
+
+                user32 = ctypes.WinDLL("user32", use_last_error=True)
+                kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+                # Explicit prototypes are important on 64-bit Windows;
+                # otherwise pointer-sized handles may be truncated.
+                user32.OpenClipboard.argtypes = [wintypes.HWND]
+                user32.OpenClipboard.restype = wintypes.BOOL
+                user32.EmptyClipboard.argtypes = []
+                user32.EmptyClipboard.restype = wintypes.BOOL
+                user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+                user32.SetClipboardData.restype = wintypes.HANDLE
+                user32.CloseClipboard.argtypes = []
+                user32.CloseClipboard.restype = wintypes.BOOL
+
+                kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+                kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+                kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+                kernel32.GlobalLock.restype = ctypes.c_void_p
+                kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+                kernel32.GlobalUnlock.restype = wintypes.BOOL
+                kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+                kernel32.GlobalFree.restype = wintypes.HGLOBAL
+
+                payload = (text + "\x00").encode("utf-16-le")
+
+                hmem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(payload))
+                if not hmem:
+                    return False
+
+                transferred = False
+                try:
+                    ptr = kernel32.GlobalLock(hmem)
+                    if not ptr:
+                        return False
+
+                    try:
+                        ctypes.memmove(ptr, payload, len(payload))
+                    finally:
+                        kernel32.GlobalUnlock(hmem)
+
+                    if not user32.OpenClipboard(None):
+                        return False
+
+                    try:
+                        if not user32.EmptyClipboard():
+                            return False
+
+                        if not user32.SetClipboardData(CF_UNICODETEXT, hmem):
+                            return False
+
+                        # After successful SetClipboardData, Windows owns hmem.
+                        transferred = True
+                        return True
+                    finally:
+                        user32.CloseClipboard()
+                finally:
+                    if not transferred and hmem:
+                        kernel32.GlobalFree(hmem)
+
+            except Exception:
+                # If the native API unexpectedly fails, fall through to Tk.
+                pass
+
+        try:
+            self.clipboard_clear()
+            self.clipboard_append(text)
+            self.update()
+            return True
+        except Exception:
+            return False
+
+    def _copy_widget_selection_to_clipboard(self, event=None):
+        """
+        Copy the current selection to a persistent system clipboard.
+
+        Works with the Path Entry, read-only header Text widgets and INFO Text.
+        """
+        widget = getattr(event, "widget", None)
+        if widget is None:
+            return "break"
+
+        selected = None
+
+        # Text-like widgets (header fields, INFO window).
+        try:
+            selected = widget.get("sel.first", "sel.last")
+        except Exception:
+            pass
+
+        # Entry-like widgets (Path field).
+        if selected is None:
+            try:
+                if widget.selection_present():
+                    start = widget.index("sel.first")
+                    end = widget.index("sel.last")
+                    selected = widget.get()[start:end]
+            except Exception:
+                pass
+
+        # No selection: preserve the usual Ctrl+C behavior of doing nothing.
+        if selected is None:
+            return "break"
+
+        self._set_persistent_clipboard_text(selected)
+        return "break"
+
+    def _on_header_focus_in(self, event):
+        """Select the whole focused header field so TAB + Ctrl+C works naturally."""
+        self._select_header_field_contents(event.widget)
+
+    def _on_header_focus_out(self, event):
+        try:
+            event.widget.tag_remove(tk.SEL, "1.0", tk.END)
+        except Exception:
+            pass
+
+    def _focus_next_widget(self, event):
+        next_widget = event.widget.tk_focusNext()
+        if next_widget is not None:
+            next_widget.focus_set()
+        return "break"
+
+    def _focus_prev_widget(self, event):
+        prev_widget = event.widget.tk_focusPrev()
+        if prev_widget is not None:
+            prev_widget.focus_set()
+        return "break"
+
+    def get_current_series_state(self):
+        """Return (y2d, index, count, store_indices, label) or None."""
+        if self.current is None:
+            return None
+
+        meta = self.current.meta or {}
+        y2d = meta.get("series_y")
+        if not isinstance(y2d, np.ndarray) or y2d.ndim != 2 or y2d.shape[0] < 1:
+            return None
+
+        count = int(y2d.shape[0])
+        try:
+            index = int(meta.get("series_index", 0))
+        except Exception:
+            index = 0
+        index = max(0, min(count - 1, index))
+
+        store_indices = list(meta.get("series_store_indices", []) or [])
+        if len(store_indices) != count:
+            store_indices = list(range(1, count + 1))
+
+        label = str(meta.get("series_label", "") or self.current.yunit or "Series")
+        return y2d, index, count, store_indices, label
+
+    def update_series_navigation_state(self):
+        prev_btn = getattr(self, "series_prev_btn", None)
+        next_btn = getattr(self, "series_next_btn", None)
+        if prev_btn is None or next_btn is None:
+            return
+
+        state = self.get_current_series_state()
+        if state is None:
+            self.series_counter_var.set("1/1" if self.current is not None else "0/0")
+            prev_btn.state(["disabled"])
+            next_btn.state(["disabled"])
+            return
+
+        _y2d, index, count, _store_indices, _label = state
+        self.series_counter_var.set(f"{index + 1}/{count}")
+
+        if count <= 1 or index <= 0:
+            prev_btn.state(["disabled"])
+        else:
+            prev_btn.state(["!disabled"])
+
+        if count <= 1 or index >= count - 1:
+            next_btn.state(["disabled"])
+        else:
+            next_btn.state(["!disabled"])
+
+    def set_series_index(self, index: int):
+        state = self.get_current_series_state()
+        if state is None:
+            self.update_series_navigation_state()
+            return
+
+        y2d, _old_index, count, store_indices, label = state
+        index = max(0, min(count - 1, int(index)))
+
+        meta = self.current.meta or {}
+        meta["series_index"] = index
+        self.current.meta = meta
+        self.current.y = np.asarray(y2d[index], dtype=float)
+
+        stored_index = store_indices[index] if index < len(store_indices) else index + 1
+        path = getattr(self.current, "path", "") or ""
+        self.status_var.set(
+            f"{path} | {label} {index + 1}/{count} "
+            f"(stored index {stored_index})"
+        )
+
+        self.redraw()
+        self.update_series_navigation_state()
+
+    def series_prev(self):
+        state = self.get_current_series_state()
+        if state is None:
+            return
+        _y2d, index, _count, _store_indices, _label = state
+        if index > 0:
+            self.set_series_index(index - 1)
+
+    def series_next(self):
+        state = self.get_current_series_state()
+        if state is None:
+            return
+        _y2d, index, count, _store_indices, _label = state
+        if index < count - 1:
+            self.set_series_index(index + 1)
+
+    def get_current_info_fields(self) -> List[Dict[str, str]]:
+        if self.current is None or not is_opus_like(getattr(self.current, "path", "")):
+            return []
+        return list((self.current.meta or {}).get("info_fields", []) or [])
+
+    def update_info_button_state(self):
+        btn = getattr(self, "info_btn", None)
+        if btn is None:
+            return
+
+        # Enable INFO only when the currently displayed OPUS spectrum contains
+        # a recognized active INFO block. Other formats and INFO-less OPUS files
+        # keep the button disabled.
+        if self.get_current_info_fields():
+            btn.state(["!disabled"])
+        else:
+            btn.state(["disabled"])
+
+    def _format_info_text(self, fields: List[Dict[str, str]]) -> str:
+        filled = [f for f in (fields or []) if str(f.get("value", "")).strip()]
+        if not fields:
+            return UI_TEXT["info_no_block"]
+        if not filled:
+            return UI_TEXT["info_no_filled_fields"]
+
+        # Keep one logical INFO field per line. Long values remain intact and
+        # can be reached with the horizontal scrollbar / copied to clipboard.
+        return "\n".join(
+            f"{f.get('label') or f.get('code') or 'INFO'}: {f.get('value', '')}"
+            for f in filled
+        )
+
+    def refresh_info_window(self):
+        win = getattr(self, "info_win", None)
+        text_widget = getattr(self, "info_text", None)
+        if win is None or text_widget is None:
+            return
+        try:
+            if not win.winfo_exists():
+                self.info_win = None
+                self.info_text = None
+                return
+        except Exception:
+            self.info_win = None
+            self.info_text = None
+            return
+
+        path = getattr(self.current, "path", "") if self.current is not None else ""
+        fname = os.path.basename(path) if path else ""
+        title = UI_TEXT["info_window_title"]
+        if fname:
+            title += f" – {fname}"
+        win.title(title)
+
+        content = self._format_info_text(self.get_current_info_fields())
+        text_widget.configure(state="normal")
+        text_widget.delete("1.0", tk.END)
+        text_widget.insert("1.0", content)
+        text_widget.configure(state="disabled")
+        text_widget.xview_moveto(0)
+        text_widget.yview_moveto(0)
+
+    def show_info_window(self):
+        fields = self.get_current_info_fields()
+
+        existing = getattr(self, "info_win", None)
+        if existing is not None:
+            try:
+                if existing.winfo_exists():
+                    self.refresh_info_window()
+                    existing.lift()
+                    existing.focus_force()
+                    return
+            except Exception:
+                pass
+
+        win = tk.Toplevel(self)
+        self.info_win = win
+        win.geometry("760x430")
+        win.minsize(420, 220)
+
+        try:
+            win.iconbitmap(resource_path(r"assets\SpectraViewer.ico"))
+        except Exception:
+            pass
+
+        # Intentionally not transient / always-on-top: this is a normal helper
+        # window that may sit beside or behind the main SpectraViewer window.
+        frame = ttk.Frame(win, padding=6)
+        frame.pack(fill="both", expand=True)
+        frame.grid_rowconfigure(0, weight=1)
+        frame.grid_columnconfigure(0, weight=1)
+
+        text_widget = tk.Text(
+            frame,
+            wrap="none",
+            font="TkFixedFont",
+            undo=False,
+            borderwidth=1,
+            relief="sunken",
+        )
+        yscroll = ttk.Scrollbar(frame, orient="vertical", command=text_widget.yview)
+        xscroll = ttk.Scrollbar(frame, orient="horizontal", command=text_widget.xview)
+        text_widget.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+        text_widget.bind("<Control-c>", self._copy_widget_selection_to_clipboard)
+        text_widget.bind("<Control-C>", self._copy_widget_selection_to_clipboard)
+
+        text_widget.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+
+        self.info_text = text_widget
+
+        def close_info(event=None):
+            try:
+                if win.winfo_exists():
+                    win.destroy()
+            finally:
+                self.info_win = None
+                self.info_text = None
+            return "break"
+
+        win.protocol("WM_DELETE_WINDOW", close_info)
+        win.bind("<Escape>", close_info)
+        self.refresh_info_window()
+        win.lift()
+        win.focus_force()
 
     def show_error_state(self, path: str, error_msg: str):
         self.current = None
         self.clear_plot()
+        self.update_series_navigation_state()
 
         fname = os.path.basename(path) if path else ""
         fullpath = str(path or "")
         msg = str(error_msg or UI_TEXT["unknown_error"])
 
-        wpx = self.canvas.get_tk_widget().winfo_width() or 900
-        max_chars = int(wpx / 10)
-
         header_lines = []
         if fname:
-            header_lines.append(self.ellipsize(fname, max_chars))
+            header_lines.append(fname)
         if fullpath and fullpath != fname:
-            header_lines.append(self.ellipsize(fullpath, max_chars))
-        header_lines.append(self.ellipsize(f"{UI_TEXT['error_prefix']}: {msg}", max_chars))
+            header_lines.append(fullpath)
+        header_lines.append(f"{UI_TEXT['error_prefix']}: {msg}")
         self.show_header_lines(header_lines)
 
         if fullpath:
@@ -1656,20 +2855,27 @@ class App(_BaseTk):
         else:
             self.status_var.set(f"{UI_TEXT['error_prefix']}: {msg}")
 
-    def load_current(self):
+    def load_current(self) -> bool:
         if self.idx < 0 or self.idx >= len(self.files):
-            return
-        
+            return False
+
         path = self.files[self.idx]
+        loaded = False
         try:
-            spec = read_any(str(path), metadata_encoding=self.metadata_encoding) 
+            spec = read_any(str(path), metadata_encoding=self.metadata_encoding)
             self.current = spec
             self.status_var.set(str(path))
             self.redraw()
+            self.update_info_button_state()
+            self.refresh_info_window()
+            self.update_series_navigation_state()
+            loaded = True
         except Exception as ex:
             self.show_error_state(str(path), str(ex))
         finally:
             self.update_counter()
+
+        return loaded
 
     def choose_color(self):
         # Returns: ((r, g, b), "#rrggbb") or (None, None).
@@ -1757,28 +2963,14 @@ class App(_BaseTk):
             return
         spec = self.current
         self.ax.clear()
-        self.ax.plot(spec.x, spec.y, color=self.line_color)
+        self.ax.plot(spec.x, spec.y, color=self.line_color, linewidth=self.line_width)
 
-        # Header lines: 1) filename, 2) sample name, 3) sample form.
+        # Header fields: 1) filename, 2) sample name, 3) sample form.
+        # Store the full strings; no width-dependent ellipsis is applied.
         fname = os.path.basename(spec.path) if spec.path else spec.title
         sname = (spec.meta or {}).get("sample_name", "") or ""
         sform = (spec.meta or {}).get("sample_form", "") or ""
-
-        wpx = self.canvas.get_tk_widget().winfo_width() or 900
-        max_chars = int(wpx / 10)
-
-        t1 = self.ellipsize(fname, max_chars)
-        t2 = self.ellipsize(sname, max_chars)
-        t3 = self.ellipsize(sform, max_chars)
-
-        lines = [t1]
-        if t2: lines.append(t2)
-        if t3: lines.append(t3)
-
-        self.header.configure(state="normal")
-        self.header.delete("1.0", tk.END)
-        self.header.insert("1.0", "\n".join(lines))
-        self.header.configure(state="disabled")
+        self.show_header_lines([fname, sname, sform])
         self.ax.set_xlabel(spec.xunit)
         self.ax.set_ylabel(spec.yunit or "Intensity")
 
@@ -1795,14 +2987,7 @@ class App(_BaseTk):
         self.update_crosshair_visibility()
 
         self.canvas.draw_idle()
-
-    def ellipsize(self, s: str, max_chars: int) -> str:
-        s = s or ""
-        if max_chars < 10:
-            max_chars = 10
-        if len(s) <= max_chars:
-            return s
-        return s[: max_chars - 3].rstrip() + "..."
+        self.update_series_navigation_state()
 
     def current_default_png_name(self) -> str:
         if not self.current or not self.current.path:
