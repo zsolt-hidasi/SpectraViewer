@@ -30,7 +30,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 from matplotlib.figure import Figure
 
 APP_NAME = "SpectraViewer"
-VERSION_NUMBER = "1.1.8"
+VERSION_NUMBER = "1.1.9"
 AUTHOR = "Hidasi Zsolt"
 YEAR = "2026"
 
@@ -160,7 +160,7 @@ UI_TEXT = {
     "invalid_line_width_message": "Érvénytelen line_width érték a SpectraViewer.ini fájlban.\n\nMegengedett tartomány: 0,1–5,0.\nAz 1,5-ös alapértelmezett érték lép érvénybe.",
     "about_window_title": "Névjegy",
     "about_dnd_line": "\t• Drag&Drop – fájl vagy mappa behúzása az ablakba\n",
-    "about_text": "Verzió: {version} © {author}, {year}\nFejlesztés: {author}, OpenAI\n\nTámogatott spektrum formátumok:\n\t• (*.0, *.1, …)\n\t• JCAMP-DX (*.dx, *.jdx)\n\t• DPT (*.dpt)\n\nGyorsbillentyűk:\n\t• Ctrl+O – Fájl megnyitása\n\t• Ctrl+Shift+O – Mappa megnyitása\n\t• Bal nyíl / Jobb nyíl – Előző / Következő spektrum\n\t• Page Up / Page Down – 25 fájl előre / hátra\n\t• Home / End – Első / utolsó fájl\n\t• Fel / Le nyíl – Előző / következő spektrum a DataSeries-ben\n\t• Ctrl+S – spektrum mentése képként\n\t• Ctrl+Shift+C – spektrum szín választása / módosítása\n{dnd_line}\t• F1 – Névjegy\n\nHasználati útmutató: SpectraViewerMan_HU.pdf\n\nA beállítások a SpectraViewer.ini fájlba mentődnek. Az alapállapot visszaállításához töröld ezt a fájlt.",
+    "about_text": "Verzió: {version} © {author}, {year}\nFejlesztés: {author}, OpenAI\n\nTámogatott spektrum formátumok:\n\t• OPUS (*.0, *.1, …)\n\t• JCAMP-DX (*.dx, *.jdx)\n\t• DPT (*.dpt)\n\nGyorsbillentyűk:\n\t• Ctrl+O – Fájl megnyitása\n\t• Ctrl+Shift+O – Mappa megnyitása\n\t• Bal nyíl / Jobb nyíl – Előző / Következő spektrum\n\t• Page Up / Page Down – 25 fájl előre / hátra\n\t• Home / End – Első / utolsó fájl\n\t• Fel / Le nyíl – Előző / következő spektrum a DataSeries-ben\n\t• Ctrl+S – spektrum mentése képként\n\t• Ctrl+Shift+C – spektrum szín választása / módosítása\n{dnd_line}\t• F1 – Névjegy\n\nHasználati útmutató: SpectraViewerMan_HU.pdf\n\nA beállítások a SpectraViewer.ini fájlba mentődnek. Az alapállapot visszaállításához töröld ezt a fájlt.",
     "save_message_title": "Mentés",
     "no_loaded_spectrum": "Nincs betöltött spektrum.",
     "save_plot_title": "Ábra mentése",
@@ -474,21 +474,26 @@ def decode_meta_text(value, metadata_encoding: str = DEFAULT_METADATA_ENCODING):
 
 def extract_opus_active_parameter_metadata(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING, file_bytes: Optional[bytes] = None) -> Dict[str, str]:
     """
-    Extract the active Sample Name / Sample Form values from binary OPUS
-    parameter records, without using the OPUS history / COMMAND_LINE area.
+    Extract the active Sample Name / Sample Form values from the OPUS Sample
+    Parameter block referenced by the file directory.
 
-    OPUS files may contain several binary SNM/SFM parameter clusters. Metadata
-    edits performed by OPUS (including MTX/INF macros) append a new parameter
-    cluster instead of necessarily overwriting the old one. Undo operations may
-    likewise append another cluster containing the restored values. Therefore
-    the last plausible SNM/SFM cluster is the active state.
+    Important: edited OPUS files may contain more than one genuine binary
+    SNM/SFM parameter block. The active edited Sample Parameter block can occur
+    *before* the original measurement block in the file, while later SNM/SFM
+    strings may also occur in the textual history / COMMAND_LINE area.
+    Therefore file-position order is not a reliable way to determine the
+    currently active values.
 
-    Only genuine binary parameter records are considered, for example:
+    The OPUS directory identifies Sample Parameter blocks by type code 0xA0.
+    In edited files tested here, the current/editable Sample Parameter block
+    uses the unflagged directory type (0x000000A0), while the original
+    measurement block remains as 0x400000A0. If an unflagged block is present,
+    prefer it. If not, fall back to the last directory-referenced Sample
+    Parameter block so original, never-edited files continue to work.
 
-        SNM\x00\x02\x00...<NUL-terminated text>
-        SFM\x00\x02\x00...<NUL-terminated text>
-
-    Text fragments in OPUS history are deliberately ignored.
+    Only structured binary parameter records inside the selected directory
+    block are parsed. Text fragments in OPUS history are therefore excluded by
+    construction.
 
     If *file_bytes* is supplied, reuse that already-read OPUS binary buffer.
     This keeps the current SpectraViewer optimization for large OPUS/DataSeries
@@ -502,73 +507,122 @@ def extract_opus_active_parameter_metadata(path: str, metadata_encoding: str = D
     else:
         data = file_bytes
 
-    def iter_text_records(key: bytes):
-        marker = key + b"\x00\x02\x00"
-        start = 0
-        while True:
-            pos = data.find(marker, start)
-            if pos < 0:
-                break
-            start = pos + 1
-
-            # OPUS text parameter record header: 3-byte key + NUL + 4 bytes.
-            value_start = pos + 8
-            if value_start >= len(data):
-                continue
-
-            value_end = data.find(b"\x00", value_start)
-            if value_end < 0 or value_end == value_start:
-                continue
-            if value_end - value_start > 4096:
-                continue
-
-            raw_value = data[value_start:value_end]
-
-            # Reject obvious non-text payloads; keep normal 8-bit code-page text.
-            if any((b < 32 and b not in (9, 10, 13)) for b in raw_value):
-                continue
-
-            text_value = raw_value.decode("latin-1", errors="replace")
-            text_value = decode_meta_text(text_value, metadata_encoding) or ""
-            if text_value:
-                yield pos, key.decode("ascii"), text_value
-
-    records = sorted(
-        list(iter_text_records(b"SNM")) + list(iter_text_records(b"SFM")),
-        key=lambda item: item[0],
-    )
-    if not records:
+    # Basic OPUS header validation.
+    if len(data) < 24 or data[:4] != OPUS_MAGIC:
         return {}
 
-    # Split records into nearby parameter clusters. SNM and SFM belonging to
-    # the same OPUS parameter block are normally close together, while a later
-    # metadata edit creates another cluster farther on in the file.
-    cluster_gap = 4096
-    clusters = []
-    current_cluster = []
-    previous_pos = None
+    try:
+        directory_start = int.from_bytes(data[12:16], "little", signed=True)
+        num_blocks = int.from_bytes(data[20:24], "little", signed=True)
+    except Exception:
+        return {}
 
-    for record in records:
-        pos = record[0]
-        if previous_pos is not None and pos - previous_pos > cluster_gap:
-            if current_cluster:
-                clusters.append(current_cluster)
-            current_cluster = []
-        current_cluster.append(record)
-        previous_pos = pos
+    if directory_start < 0 or num_blocks <= 0 or num_blocks > 10000:
+        return {}
 
-    if current_cluster:
-        clusters.append(current_cluster)
+    directory_end = directory_start + num_blocks * 12
+    if directory_end > len(data):
+        return {}
 
-    # OPUS appends the newest active parameter state. This also handles Undo:
-    # the restored state is written as the newest binary parameter cluster,
-    # while obsolete values remain only in earlier clusters/history.
-    active_cluster = clusters[-1]
+    # brukeropus decodes the meaningful OPUS block type from the low 22 bits.
+    # For Sample Parameters that low-bit type code is 0xA0.
+    block_type_mask = 0x003FFFFF
+    sample_parameter_type = 0x000000A0
+    original_variant_flag = 0x40000000
+
+    sample_blocks = []
+
+    for index in range(num_blocks):
+        entry_pos = directory_start + index * 12
+
+        type_raw = int.from_bytes(
+            data[entry_pos:entry_pos + 4], "little", signed=False
+        )
+        size_words = int.from_bytes(
+            data[entry_pos + 4:entry_pos + 8], "little", signed=True
+        )
+        block_start = int.from_bytes(
+            data[entry_pos + 8:entry_pos + 12], "little", signed=True
+        )
+
+        if (type_raw & block_type_mask) != sample_parameter_type:
+            continue
+
+        if size_words <= 0 or block_start < 0:
+            continue
+
+        block_size = size_words * 4
+        block_end = block_start + block_size
+        if block_end > len(data):
+            continue
+
+        sample_blocks.append(
+            (index, type_raw, block_start, block_size)
+        )
+
+    if not sample_blocks:
+        return {}
+
+    # Edited files can retain the original 0x400000A0 block in addition to a
+    # current 0x000000A0 block. Prefer the unflagged/current variant. If there
+    # are several such blocks, use the last directory entry among them.
+    current_blocks = [
+        block for block in sample_blocks
+        if not (block[1] & original_variant_flag)
+    ]
+
+    _index, _type_raw, block_start, block_size = (
+        current_blocks[-1] if current_blocks else sample_blocks[-1]
+    )
+
+    block = data[block_start:block_start + block_size]
 
     result: Dict[str, str] = {}
-    for _pos, key, value in active_cluster:
-        # If a malformed block contains a duplicate key, keep its last value.
-        result[key] = value
+    loc = 0
+
+    while loc + 8 <= len(block):
+        key_bytes = block[loc:loc + 3]
+
+        # Structured OPUS parameter records use a three-byte key followed by NUL.
+        if block[loc + 3:loc + 4] != b"\x00":
+            break
+
+        try:
+            key = key_bytes.decode("ascii")
+        except UnicodeDecodeError:
+            break
+
+        param_type = int.from_bytes(
+            block[loc + 4:loc + 6], "little", signed=False
+        )
+        size_words = int.from_bytes(
+            block[loc + 6:loc + 8], "little", signed=False
+        )
+        payload_size = size_words * 2
+
+        value_start = loc + 8
+        value_end = value_start + payload_size
+
+        if value_end > len(block):
+            break
+
+        if key == "END":
+            break
+
+        if key in ("SNM", "SFM") and param_type == 2:
+            raw_value = block[value_start:value_end].split(b"\x00", 1)[0]
+
+            if raw_value:
+                text_value = raw_value.decode("latin-1", errors="replace")
+                text_value = (
+                    decode_meta_text(text_value, metadata_encoding) or ""
+                )
+                if text_value:
+                    # If a malformed block contains a duplicate key, keep its
+                    # last structured value.
+                    result[key] = text_value
+
+        loc = value_end
 
     return result
 
@@ -912,8 +966,8 @@ def read_opus_file(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING
     sfm = decode_meta_text(getattr(opus, "sfm", "") or "", metadata_encoding) or ""
 
     # OPUS files may contain multiple SNM/SFM occurrences after metadata editing.
-    # Use active binary parameter records, not history / COMMAND_LINE text,
-    # because history may contain changes later reverted by Undo Changes.
+    # Read them from the active Sample Parameter block referenced by the OPUS
+    # directory, not from file-position order or history / COMMAND_LINE text.
     active_meta = extract_opus_active_parameter_metadata(
         path, metadata_encoding, file_bytes=opus_binary
     )

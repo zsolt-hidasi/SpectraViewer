@@ -67,3 +67,7 @@
   o Added: Ctrl+I shortcut for the INFO viewer; keyboard shortcut documentation now distinguishes file-list navigation from DataSeries navigation.
   o Updated: About text and supported-format description now reflect arbitrary numeric OPUS extensions and the expanded keyboard shortcuts.
   o Added: English and Hungarian user manuals updated for version 1.1.8.
+[1.1.9]
+  o Fixed: Active Sample Name / Sample Form detection in edited OPUS files now reads the values from the active Sample Parameter block referenced by the OPUS file directory instead of relying on the physical order of SNM/SFM records in the file.
+  o Fixed: Obsolete SNM/SFM values retained in original parameter blocks or file history are no longer displayed as active metadata.
+  o Improved: Files restored using OPUS Undo Changes are handled correctly even when traces of the reverted metadata edits remain in the file history.

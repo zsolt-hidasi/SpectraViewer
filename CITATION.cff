@@ -1,9 +1,8 @@
 cff-version: 1.2.0
 message: "If you use SpectraViewer in your work, please cite it using the metadata from this file."
 title: "SpectraViewer"
-version: "1.1.8"
-doi: "10.5281/zenodo.22736212"
-date-released: 2026-09-13
+version: "1.1.9"
+date-released: 2026-09-16
 type: software
 authors:
   - family-names: "Hidasi"
@@ -15,11 +14,14 @@ abstract: >-
   for fast visual inspection and navigation through spectrum collections,
   not for spectral processing or data manipulation.
 keywords:
-  - spectroscopy
-  - spectrum viewer
+  - Spectroscopy
+  - Spectrum viewer
   - FTIR
-  - OPUS
+  - Bruker OPUS
   - JCAMP-DX
   - DPT
+  - Infrared spectroscopy
+  - Spectral data
+  - Scientific software
 license: MIT
 repository-code: "https://github.com/zsolt-hidasi/SpectraViewer"
