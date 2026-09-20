@@ -18,6 +18,10 @@ SpectraViewer does **not** replace OPUS or other dedicated spectroscopy software
 
 SpectraViewer displays a single spectrum at a time. It does not provide stacked or overlaid multi-spectrum views.
 
+<p align="center">
+  <img src="assets/SpectraViewer_screenshot.png" alt="SpectraViewer 1.1.9 showing an FTIR spectrum and OPUS INFO metadata" width="1000">
+</p>
+
 ## Current version
 
 **Version:** 1.1.9<br>
