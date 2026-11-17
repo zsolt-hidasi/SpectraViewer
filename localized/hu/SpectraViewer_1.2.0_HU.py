@@ -6,6 +6,14 @@
 import os, sys
 import re
 import configparser
+import base64
+import json
+import zlib
+import tempfile
+import unicodedata
+from contextlib import contextmanager
+from functools import wraps
+from datetime import datetime, timezone
 import numpy as np
 import tkinter as tk
 import matplotlib
@@ -28,9 +36,10 @@ from dataclasses import dataclass
 from typing import List, Optional, Dict, Any
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
 from matplotlib.figure import Figure
+from matplotlib.ticker import AutoMinorLocator, NullLocator
 
 APP_NAME = "SpectraViewer"
-VERSION_NUMBER = "1.1.9"
+VERSION_NUMBER = "1.2.0"
 AUTHOR = "Hidasi Zsolt"
 YEAR = "2026"
 
@@ -40,22 +49,13 @@ MAX_FILE_COUNT = 20000
 # OPUS native files use a numeric extension and this 4-byte magic signature.
 OPUS_MAGIC = b"\x0A\x0A\xFE\xFE"
 
-# Large OPUS files are still fully supported; these values only control
-# the configurable warning threshold. Very high values are rejected so
-# exceptionally large OPUS/FPA containers cannot silently bypass the warning.
+# The OPUS warning threshold is user-configurable (SpectraViewer.ini).
+# The separate hard file-size limit is fixed and applies before OPUS decoding.
 DEFAULT_LARGE_OPUS_WARN_MB = 20
 MAX_LARGE_OPUS_WARN_MB = 100
+MAX_OPUS_FILE_MB = 100
+MAX_OPUS_FILE_BYTES = MAX_OPUS_FILE_MB * 1024 * 1024
 
-ENCODING_OPTIONS = [
-    ("Auto / OPUS alapértelmezett", "auto"),
-    ("Windows-1252 / nyugat-európai", "cp1252"),
-    ("Windows-1250 / közép-európai", "cp1250"),
-    ("UTF-8", "utf-8"),
-    ("Latin-1 / ISO-8859-1", "iso-8859-1"),
-    ("Latin-2 / ISO-8859-2", "iso-8859-2"),
-]
-ENCODING_LABEL_TO_VALUE = dict(ENCODING_OPTIONS)
-ENCODING_VALUE_TO_LABEL = {value: label for label, value in ENCODING_OPTIONS}
 DEFAULT_METADATA_ENCODING = "auto"
 DEFAULT_LINE_COLOR = "#1f77b4"
 DEFAULT_LINE_WIDTH = 1.5
@@ -75,104 +75,169 @@ OPUS_SPECTRAL_TYPE_PRIORITY = ("a", "t", "r", "km")
 
 UI_TEXT = {
     "initial_status": "Válassz egy fájlt vagy mappát…",
-    "last_path_not_found_status": "Az utolsó elérési út nem található. Válassz egy fájlt vagy mappát…",
-    "last_path_unsupported_status": "Az utolsó elérési út nem támogatott formátumra mutat. Válassz egy fájlt vagy mappát…",
-    "last_path_single_folder_status": "Az utolsó elérési út mappa, de a Single file mód be van kapcsolva. Válassz egy spektrumfájlt…",
-    "last_path_no_spectrum_status": "Az utolsó útvonal visszaállítva, de nem találtam támogatott spektrumfájlt.",
-    "last_path_too_many_status": "Az utolsó mappa {count} támogatott fájlt tartalmaz. Automatikusan nem töltöttem be; szükség esetén nyisd meg kézzel.",
-    "last_path_restored_status": "Utolsó munkamenet visszaállítva: {path}",
+    "busy_status": "Feldolgozás folyamatban… Kérem, várjon.",
+    "loading_spectrum_status": "Betöltés: {filename}… Kérem, várjon.",
+    "last_path_not_found_status": "Az utoljára használt elérési út nem található. Válassz egy fájlt vagy mappát…",
+    "last_path_unsupported_status": "Az utoljára használt elérési út nem támogatott fájlformátumra mutat. Válassz egy fájlt vagy mappát…",
+    "last_path_single_folder_status": "Az utoljára használt elérési út egy mappára mutat, de a \"Single file\" mód be van kapcsolva. Válassz egy spektrumfájlt…",
+    "last_path_no_spectrum_status": "Az utoljára használt elérési útvonalon nem található támogatott spektrumfájl.",
+    "last_path_too_many_status": "Az utoljára használt mappa {count} támogatott fájlt tartalmaz, ezért nem töltődött be automatikusan. Szükség esetén nyisd meg kézzel.",
+    "last_path_restored_status": "Az előző munkamenet visszaállítva: {path}",
     "path_label": "Elérési út:",
     "folder_button": "Mappa…",
     "file_button": "Fájl…",
     "recursive_checkbox": "almappák bejárása",
-    "single_file_checkbox": "csak egy fájl",
+    "single_file_checkbox": "\"Single file\" mód",
     "about_button": "Névjegy",
     "prev_button": "◀ Előző",
     "next_button": "Következő ▶",
-    "save_image_button": "Mentés képként",
+    "export_image_button": "Képexport",
+    "save_jcamp_button": "JCAMP-DX export",
+    "save_jcamp_title": "Spektrum exportálása JCAMP-DX formátumban",
+    "save_jcamp_error_title": "JCAMP-DX exportálási hiba",
+    "save_jcamp_same_source": "A forrásfájl nem írható felül. Válassz másik célhelyet.",
+    "save_jcamp_filter": "JCAMP-DX (*.dx)",
+    "jcamp_export_xy_required": "A JCAMP-DX-exporthoz legalább két X/Y-adatpár szükséges (azonos számú X- és Y-értékkel).",
+    "jcamp_export_nonfinite": "A JCAMP-DX-export nem tudja biztonságosan tárolni a NaN vagy végtelen értékeket.",
+    "file_access_title": "Fájlhozzáférési hiba",
+    "file_locked_message": "A fájlhoz nem lehet hozzáférni. Lehetséges, hogy egy másik alkalmazás (például az OPUS) zárolta.\n\n{path}\n\n{reason}",
     "color_button": "Szín",
     "invert_x_checkbox": "X fordítás",
     "crosshair_checkbox": "Szálkereszt",
-    "metadata_encoding_label": "Metadata encoding:",
+    "metadata_encoding_label": "Metaadat-kódolás:",
+    "encoding_auto": "Automatikus / OPUS alapértelmezés",
+    "encoding_cp1252": "Windows-1252 / nyugat-európai",
+    "encoding_cp1250": "Windows-1250 / közép-európai",
+    "encoding_utf8": "UTF-8",
+    "encoding_latin1": "Latin-1 / ISO-8859-1",
+    "encoding_latin2": "Latin-2 / ISO-8859-2",
     "info_button": "INFO",
     "info_window_title": "INFO",
-    "info_no_block": "Ehhez a spektrumhoz nincs elérhető INFO-blokk.",
-    "info_no_filled_fields": "Az INFO blokk nem tartalmaz kitöltött mezőket.",
+    "info_no_block": "Ehhez a spektrumhoz nem érhető el INFO-blokk.",
+    "info_no_filled_fields": "Az INFO-blokk nem tartalmaz kitöltött mezőket.",
     "axis_wavenumber": "Wavenumber (cm⁻¹)",
     "axis_intensity": "Intensity",
 
-    "single_file_title": "Single file mód",
-    "single_file_drop_multiple": "Single file módban egyszerre csak egy spektrumfájl húzható be.",
-    "single_file_folder_not_allowed": "Single file módban mappa helyett egy konkrét spektrumfájlt kell megnyitni.",
-    "single_file_select_one": "Single file módban egyszerre pontosan egy támogatott spektrumfájl nyitható meg.",
-    "single_file_path_must_be_file": "Single file módban az elérési útnak egy konkrét spektrumfájlra kell mutatnia, nem mappára.",
-    "single_file_invalid_path": "Single file módban a megadott útvonalnak egy létező spektrumfájlra kell mutatnia.",
-    "single_file_subfolders_disabled": "Single file módban az almappák bejárása nem használható.",
-    "single_file_enabled_status": "Single file mód bekapcsolva.",
-    "single_file_disabled_rebuilt_status": "Single file mód kikapcsolva. Mappakörnyezet visszatöltve ({mode}).",
-    "single_file_disabled_restored_status": "Single file mód kikapcsolva. A rekurzív beállítás visszaállítva.",
+    "single_file_title": "\"Single file\" mód",
+    "single_file_drop_multiple": "\"Single file\" módban egyszerre csak egy spektrumfájlt húzhatsz az ablakba.",
+    "single_file_folder_not_allowed": "\"Single file\" módban mappa helyett egy konkrét spektrumfájlt nyiss meg.",
+    "single_file_select_one": "\"Single file\" módban egyszerre pontosan egy támogatott spektrumfájl nyitható meg.",
+    "single_file_path_must_be_file": "\"Single file\" módban az elérési útnak egy konkrét spektrumfájlra kell mutatnia, nem mappára.",
+    "single_file_invalid_path": "\"Single file\" módban a megadott elérési útnak egy létező spektrumfájlra kell mutatnia.",
+    "single_file_subfolders_disabled": "\"Single file\" módban az almappák bejárása nem használható.",
+    "single_file_enabled_status": "\"Single file\" mód bekapcsolva.",
+    "single_file_disabled_rebuilt_status": "\"Single file\" mód kikapcsolva. A mappakörnyezet újraépítve ({mode}).",
+    "single_file_disabled_restored_status": "\"Single file\" mód kikapcsolva. Az almappák bejárásának korábbi beállítása visszaállítva.",
+    "mode_recursive": "almappákkal együtt",
+    "mode_nonrecursive": "almappák nélkül",
+    "series_default_label": "Sorozat",
+    "series_stored_status": "{path} | {label} {index}/{count} (tárolt sorszám: {stored_index})",
 
     "too_many_files_title": "Túl sok fájl",
-    "too_many_files_error": "A {origin} {count} támogatott fájlt tartalmaz.\n\nEz meghaladja a megengedett maximumot ({max_count}).\nSzűkítsd a kijelölést vagy válassz kisebb mappát.",
-    "too_many_files_confirm_title": "Túl sok betöltendő fájl",
-    "too_many_files_confirm": "A {origin} {count} támogatott fájlt tartalmaz.\n\nEnnyi spektrum betöltése memóriaigényes művelet,\nami lassú működést eredményezhet.\nSzeretnéd folytatni?",
+    "too_many_files_error": "Forrás: {origin}\nTámogatott fájlok száma: {count}\n\nEz meghaladja a megengedett felső határt ({max_count}).\nSzűkítsd a kijelölést, vagy válassz kisebb mappát.",
+    "too_many_files_confirm_title": "Nagy fájllista",
+    "too_many_files_confirm": "Forrás: {origin}\nTámogatott fájlok száma: {count}\n\nEnnyi spektrum betöltése sok memóriát igényelhet, és lelassíthatja a programot.\nSzeretnéd folytatni?",
 
     "large_opus_title": "Nagy méretű OPUS-fájl",
-    "large_opus_single_confirm": "Az OPUS-fájl\n\n{filename}\n\n{size_mb:.1f} MB méretű, ami meghaladja a {threshold_mb} MB-os küszöbértéket.\n\nA nagy méretű OPUS-fájlok spektrumsorozatokat (DataSeries) vagy beágyazott képeket tartalmazhatnak, és betöltésükhöz több memóriára és időre lehet szükség.\n\nSzeretnéd folytatni?",
     "large_opus_list_title": "Nagy méretű OPUS-fájlok",
-    "large_opus_list_confirm": "A {origin} mappa {count} {threshold_mb} MB-nál nagyobb OPUS fájlt tartalmaz.\n\nEzek a fájlok nagy méretű spektrumsorozatokat (DataSeries) vagy beágyazott képeket tartalmazhatnak, és megnyitásukhoz több memóriára és időre lehet szükség.\n\nSzeretnéd folytatni?",
+    "large_opus_choice_intro": "Forrás: {origin}\nA {threshold_mb} MB-os figyelmeztetési küszöböt meghaladó OPUS-fájlok száma: {count}.\n\nBetöltheted a teljes fájllistát, kihagyhatod ezeket a fájlokat, vagy megszakíthatod a műveletet.",
+    "large_opus_choice_single": "Kiválasztott OPUS-fájl: {filename} ({size_mb:.1f} MB).",
+    "large_opus_choice_hard": "A fájlok közül {count} meghaladja a {max_mb} MB-os maximális méretkorlátot. Ezek szerepelhetnek a fájllistában, de nem nyithatók meg.",
+    "large_opus_choice_small_count": "Szűrt lista választásakor {kept} fájl marad a {total} támogatott fájlból.",
+    "large_opus_choice_no_small": "A kiválasztott fájlok között nincs a figyelmeztetési küszöb alatti fájl.",
+    "large_opus_choice_all_button": "A teljes fájllista megnyitása",
+    "large_opus_choice_small_button": "Csak a figyelmeztetési küszöb alatti fájlok megnyitása",
+    "large_opus_choice_cancel_button": "Művelet megszakítása",
+    "filtered_large_opus_status": "Szűrt lista: {count} fájl betöltve; {excluded} OPUS-fájl kihagyva ({threshold_mb} MB felett).",
+    "startup_large_opus_cancelled": "Az utoljára használt elérési út nem töltődött be, mert megszakítottad a nagyméretű OPUS-fájlok kiválasztását.",
+    "excluded_large_opus_counter": " (-{count} nagy OPUS-fájl kihagyva)",
+    "opus_file_too_large": "Ez az OPUS-fájl {size_mb:.1f} MB méretű, amely meghaladja a SpectraViewerben megnyitható {max_mb} MB-os maximális fájlméretet.\nA korlát haladó felhasználók számára a forráskódban található MAX_OPUS_FILE_MB konstans értékének SAJÁT FELELŐSSÉGRE TÖRTÉNŐ módosításával megemelhető.\nA módosítás a nagyméretű állományok betöltése esetében jelentős memóriahasználattal és hosszabb feldolgozási idővel járhat!",
 
-    "all_supported_files": "Minden támogatott",
+    "all_supported_files": "Minden támogatott fájl",
+    "jcamp_ascii_filter": "JCAMP-DX (ASCII)",
+    "dpt_ascii_filter": "DPT (ASCII)",
     "opus_numeric_extension": "OPUS / numerikus kiterjesztés",
     "all_files": "Minden fájl",
     "open_files_title": "Fájlok megnyitása",
-    "open_folder_title": "Mappa kiválasztása",
+    "open_folder_title": "Mappa megnyitása",
     "unsupported_format_title": "Nem támogatott formátum",
-    "unsupported_selected_message": "A kiválasztott fájl(ok) formátuma nem támogatott.",
+    "unsupported_selected_message": "A kijelölt fájl(ok) formátuma nem támogatott.",
     "unsupported_path_message": "A megadott fájl formátuma nem támogatott.",
-    "some_files_skipped_title": "Néhány fájl kihagyva",
-    "selected_files_skipped": "A kiválasztott {total} fájlból {valid} támogatott, {invalid} kihagyva.\n\nKihagyott fájlok:\n- {shown}",
-    "dropped_items_skipped": "A kiválasztott elemekből {valid} támogatott fájl került betöltésre és {invalid} kihagyva.\n\nKihagyott fájlok:\n- {shown}",
-    "and_more": "\n- ... és még {more} db",
-    "selected_list_origin": "kiválasztott lista",
+    "some_files_skipped_title": "Néhány fájl kimaradt",
+    "selected_files_skipped": "A kijelölt {total} fájlból {valid} támogatott; {invalid} fájl kimaradt.\n\nKihagyott fájlok:\n- {shown}",
+    "dropped_items_skipped": "A kijelölt elemek közül {valid} támogatott fájl betöltődött, {invalid} fájl kimaradt.\n\nKihagyott fájlok:\n- {shown}",
+    "and_more": "\n- … és még {more} fájl",
+    "selected_list_origin": "kijelölt fájlok",
     "opened_folder_origin": "megnyitott mappa",
-    "folder_context_origin": "mappa-kontextus",
-    "folder_context_origin_alt": "mappa-kontextus",
+    "folder_context_origin": "aktuális mappakörnyezet",
+    "folder_context_origin_alt": "aktuális mappakörnyezet",
     "warning_title": "Figyelem",
     "no_loadable_file": "Nincs betölthető fájl.",
-    "invalid_path_title": "Érvénytelen útvonal",
+    "invalid_path_title": "Érvénytelen elérési út",
     "invalid_path_message": "A megadott elérési út (fájl vagy mappa) érvénytelen.",
     "no_match_title": "Nincs találat",
-    "no_spectrum_at_path": "A megadott útvonalon nem találtam támogatott formátumú spektrumot.",
-    "context_reload_cancelled": "A mappakörnyezet visszatöltése megszakítva. Az aktuális fájl maradt betöltve.",
+    "no_spectrum_at_path": "A megadott elérési úton nem található támogatott spektrumfájl.",
+    "context_reload_cancelled": "A mappakörnyezet újratöltése megszakadt. A jelenlegi fájl maradt betöltve.",
     "invalid_file_title": "Érvénytelen fájl",
-    "no_supported_among_items": "A kiválasztott elemek között nincs támogatott formátum.",
-    "no_supported_among_items_with_skips": "A kiválasztott {total} tétel között nem volt támogatott formátum.\n\nKihagyott fájlok:\n- {shown}",
-    "custom_list_loaded": "Egyedi lista betöltve: {count} fájl",
+    "no_supported_among_items": "A kijelölt elemek között nem található támogatott fájlformátum.",
+    "no_supported_among_items_with_skips": "A kijelölt {total} elem között egyetlen támogatott fájlformátum sem található.\n\nKihagyott fájlok:\n- {shown}",
+    "custom_list_loaded": "Egyedi fájllista betöltve: {count} fájl",
     "invalid_folder_status": "Érvénytelen mappa.",
-    "loading_cancelled_previous_kept": "Betöltés megszakítva: túl sok fájl. Az előző lista maradt aktív.",
-    "no_match_in_folder_status": "Nincs találat ebben a mappában (OPUS/DX/JDX/DPT).",
+    "loading_cancelled_previous_kept": "A betöltés megszakadt: túl sok fájl. Az előző lista maradt érvényben.",
+    "loading_cancelled_large_opus": "A betöltés megszakadt: a nagy méretű OPUS-fájlok megnyitását nem hagytad jóvá. Az előző lista maradt érvényben.",
+    "no_match_in_folder_status": "Ebben a mappában nem található támogatott spektrumfájl (OPUS/DX/JDX/DPT).",
     "error_prefix": "Hiba",
     "file_label": "Fájl",
     "unknown_error": "Ismeretlen hiba",
     "spectrum_color_title": "Spektrum színe",
-    "invalid_line_width_title": "Érvénytelen görbevonal-vastagság",
-    "invalid_line_width_message": "Érvénytelen line_width érték a SpectraViewer.ini fájlban.\n\nMegengedett tartomány: 0,1–5,0.\nAz 1,5-ös alapértelmezett érték lép érvénybe.",
+    "invalid_line_width_title": "Érvénytelen vonalvastagság",
+    "invalid_line_width_message": "Érvénytelen line_width érték a SpectraViewer.ini fájlban.\n\nMegengedett tartomány: 0,1–5,0.\nAz alapértelmezett 1,5 értéket használja a program.",
     "about_window_title": "Névjegy",
-    "about_dnd_line": "\t• Drag&Drop – fájl vagy mappa behúzása az ablakba\n",
-    "about_text": "Verzió: {version} © {author}, {year}\nFejlesztés: {author}, OpenAI\n\nTámogatott spektrum formátumok:\n\t• OPUS (*.0, *.1, …)\n\t• JCAMP-DX (*.dx, *.jdx)\n\t• DPT (*.dpt)\n\nGyorsbillentyűk:\n\t• Ctrl+O – Fájl megnyitása\n\t• Ctrl+Shift+O – Mappa megnyitása\n\t• Bal nyíl / Jobb nyíl – Előző / Következő spektrum\n\t• Page Up / Page Down – 25 fájl előre / hátra\n\t• Home / End – Első / utolsó fájl\n\t• Fel / Le nyíl – Előző / következő spektrum a DataSeries-ben\n\t• Ctrl+S – spektrum mentése képként\n\t• Ctrl+Shift+C – spektrum szín választása / módosítása\n{dnd_line}\t• F1 – Névjegy\n\nHasználati útmutató: SpectraViewerMan_HU.pdf\n\nA beállítások a SpectraViewer.ini fájlba mentődnek. Az alapállapot visszaállításához töröld ezt a fájlt.",
-    "save_message_title": "Mentés",
+    "ok_button": "OK",
+    "about_dnd_line": "\t• Drag&Drop – Fájl vagy mappa behúzása az ablakba\n",
+    "about_text": "Verzió: {version} © {author}, {year}\nFejlesztés: {author}, OpenAI\n\nTámogatott spektrumformátumok:\n\t• OPUS (*.0, *.1, …)\n\t• JCAMP-DX (*.dx, *.jdx)\n\t• DPT (*.dpt)\n\nBillentyű- és egérparancsok:\n\t• Ctrl+O – Fájl megnyitása\n\t• Ctrl+Shift+O – Mappa megnyitása\n\t• Bal / jobb nyíl – Előző / következő fájl\n\t• Page Up / Page Down – Ugrás 25 fájllal vissza / előre\n\t• Home / End – Első / utolsó fájl\n\t• Fel / le nyíl – Előző / következő spektrum a DataSeries-ben\n\t• Jobb kattintás a grafikonon – Szálkereszt be-/kikapcsolása\n\t• Ctrl+E – Az aktuális spektrum exportálása JCAMP-DX formátumban\n\t• Ctrl+Shift+E – A spektrum exportálása képként\n\t• Ctrl+Shift+C – A spektrum színének kiválasztása / módosítása\n{dnd_line}\t• F1 – Névjegy\n\nHasználati útmutató: SpectraViewerMan_HU.pdf\n\nA beállításokat a SpectraViewer.ini fájl tárolja. Az alapértelmezett beállítások visszaállításához töröld ezt a fájlt.",
+    "save_message_title": "Exportálás",
     "no_loaded_spectrum": "Nincs betöltött spektrum.",
-    "save_plot_title": "Ábra mentése",
+    "save_plot_title": "Kép exportálása",
     "saved_status": "Mentve: {path}",
 
-    "runtime_opus_not_available": "A 'brukeropus' nem importálható (OPUS olvasás nem megy).",
-    "runtime_no_xy": "Nincs x/y érték a spektrumfájlban. data_keys=",
+    "runtime_opus_not_available": "A „brukeropus” Python-csomag nem importálható, ezért az OPUS-fájlok nem olvashatók be.",
+    "runtime_no_xy": "A spektrumfájlban nem találhatók X/Y-adatok. data_keys=",
+    "runtime_no_xy_series_keys": "; series_keys=",
+    "runtime_series_2d_shape": "Kétdimenziós (2D) OPUS DataSeries-adatokat várt a program, de az Y-adattömb alakja: {shape}.",
+    "runtime_series_x_shape": "Az OPUS DataSeries Y-adattömbjének alakja ({y_shape}) nem egyeztethető össze az X-adatsor hosszával ({x_length}).",
     "runtime_unknown_file_type": "Ismeretlen fájltípus.",
-    "runtime_jcamp_no_data": "JCAMP: nincs adat (XYDATA).",
-    "runtime_jcamp_unknown_compression": "JCAMP: nem sikerült Y adatot kiolvasni (ismeretlen tömörítés?).",
-    "runtime_dpt_too_few_points": "A DPT-ből nem sikerült elég pontot kiolvasni.",
+    "runtime_jcamp_no_data": "JCAMP: nem találhatók spektrális adatok (XYDATA/XYPOINTS).",
+    "runtime_jcamp_unknown_compression": "JCAMP: az Y-adatok nem olvashatók be (ismeretlen tömörítés?).",
+    "jcamp_nonfinite_factor": "Érvénytelen JCAMP-skálázási szorzó: az érték nem véges szám.",
+    "jcamp_invalid_numeric_header": "Érvénytelen numerikus JCAMP-fejlécadat: {reason}",
+    "jcamp_truncated_xydata": "Hiányos JCAMP XYDATA-adatsor: {actual} Y-érték található a várt {expected} helyett.",
+    "jcamp_invalid_x_header": "Érvénytelen JCAMP X-tengelyadat a fejlécben: {reason}",
+    "jcamp_invalid_xypoints_row": "Érvénytelen JCAMP XYPOINTS-sor: az X/Y-értékek nem alkotnak párokat.",
+    "jcamp_invalid_xypoints_number": "Érvénytelen numerikus érték a JCAMP XYPOINTS-adatok között.",
+    "jcamp_xypoints_count_mismatch": "A JCAMP XYPOINTS-adatsor {actual} pontot tartalmaz a várt {expected} helyett.",
+    "jcamp_invalid_compressed_metadata": "Érvénytelen vagy túl nagy méretű tömörített JCAMP-metaadat.",
+    "runtime_dpt_too_few_points": "A DPT-fájlból nem sikerült elegendő adatpontot beolvasni.",
+    # Console messages are kept here too, so no English status/diagnostic text
+    # is scattered throughout the shared English/Hungarian application code.
+    "console_icon_not_set": "Az alkalmazásikon beállítása sikertelen: {error}",
+    "console_invalid_warn_file_count": "Érvénytelen [advanced] warn_file_count beállítás a SpectraViewer.ini fájlban; az alapértelmezett {default} értéket használja a program.",
+    "console_invalid_large_opus_warn_mb": "Érvénytelen [advanced] large_opus_warn_mb beállítás a SpectraViewer.ini fájlban; az alapértelmezett {default} MB-os értéket használja a program.",
+    "console_settings_not_loaded": "Nem sikerült betölteni a beállításokat: {error}",
+    "console_settings_not_saved": "Nem sikerült menteni a beállításokat: {error}",
 }
+
+# Reusable metadata encoding labels; only the UI_TEXT values need translation.
+ENCODING_OPTIONS = [
+    (UI_TEXT["encoding_auto"], "auto"),
+    (UI_TEXT["encoding_cp1252"], "cp1252"),
+    (UI_TEXT["encoding_cp1250"], "cp1250"),
+    (UI_TEXT["encoding_utf8"], "utf-8"),
+    (UI_TEXT["encoding_latin1"], "iso-8859-1"),
+    (UI_TEXT["encoding_latin2"], "iso-8859-2"),
+]
+ENCODING_LABEL_TO_VALUE = dict(ENCODING_OPTIONS)
+ENCODING_VALUE_TO_LABEL = {value: label for label, value in ENCODING_OPTIONS}
 
 
 ABOUT_PNG_B64 = """
@@ -784,6 +849,23 @@ def is_opus_like(path: str) -> bool:
     return has_numeric_extension(path) and has_opus_magic(path)
 
 
+def spectrum_file_access_error(path: str) -> Optional[OSError]:
+    """Probe plausible spectrum files to distinguish inaccessible from unsupported.
+
+    A Windows share lock may make even the OPUS signature unreadable.  Do not
+    classify that situation as an invalid format merely because the signature
+    check returned False.  No content is modified by this read-only probe.
+    """
+    if not (has_numeric_extension(path) or is_jcamp_like(path) or is_dpt_like(path)):
+        return None
+    try:
+        with open(path, "rb") as stream:
+            stream.read(4)
+    except OSError as exc:
+        return exc
+    return None
+
+
 def is_large_opus_file(path: str, threshold_bytes: int) -> bool:
     """Return True only for valid OPUS files above the supplied warning threshold."""
     if not is_opus_like(path):
@@ -808,7 +890,7 @@ def opus_series_as_2d(series):
     y = np.asarray(series.y, dtype=float)
 
     if y.ndim != 2:
-        raise ValueError(f"Expected a 2D OPUS DataSeries, got y shape {y.shape}.")
+        raise ValueError(UI_TEXT["runtime_series_2d_shape"].format(shape=y.shape))
 
     if y.shape[1] == len(x):
         return x, y
@@ -818,7 +900,7 @@ def opus_series_as_2d(series):
         return x, y.T
 
     raise ValueError(
-        f"Cannot match OPUS DataSeries y shape {y.shape} to x length {len(x)}."
+        UI_TEXT["runtime_series_x_shape"].format(y_shape=y.shape, x_length=len(x))
     )
 
 
@@ -867,6 +949,14 @@ class Spectrum:
     path: str = ""
 
 def read_opus_file(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING) -> Spectrum:
+    # Hard safety limit: check the file size before the brukeropus parser or
+    # any full-file metadata read can allocate memory for a large OPUS/FPA file.
+    size_bytes = os.path.getsize(path)
+    if size_bytes > MAX_OPUS_FILE_BYTES:
+        raise ValueError(UI_TEXT["opus_file_too_large"].format(
+            size_mb=size_bytes / (1024 * 1024), max_mb=MAX_OPUS_FILE_MB,
+        ))
+
     if opus_read is None:
         raise RuntimeError(UI_TEXT["runtime_opus_not_available"])
 
@@ -951,7 +1041,7 @@ def read_opus_file(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING
         raise RuntimeError(
             UI_TEXT["runtime_no_xy"]
             + str(data_keys)
-            + "; series_keys="
+            + UI_TEXT["runtime_no_xy_series_keys"]
             + str(series_keys)
         )
 
@@ -1017,93 +1107,453 @@ def read_opus_file(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING
     )
 
 def read_jcamp(path: str, metadata_encoding: str = DEFAULT_METADATA_ENCODING) -> Spectrum:
-    import re
-    meta: Dict[str, str] = {}
-    data_lines: List[str] = []
-    in_xy = False
+    """Read the legacy supported XYDATA and uncompressed XYPOINTS formats.
 
-    # In Auto mode, keep the previous JCAMP/DX behavior: UTF-8 with replacement.
-    # In manual modes, decode the text file directly with the selected encoding.
-    # This affects JCAMP metadata display (e.g. TITLE, SAMPLING PROCEDURE) while
-    # the numeric x/y data remain ASCII-compatible and are parsed as before.
+    This is not a general ASDF/DIF/SQZ decoder. Existing simple/packed XYDATA
+    handling is retained; SpectraViewer exports use uncomplicated AFFN numbers.
+    """
+    headers: Dict[str, str] = {}
+    data_lines: List[str] = []
+    table_kind = None
+    current_header = None
+
     metadata_encoding = normalize_metadata_encoding(metadata_encoding)
     text_encoding = "utf-8" if metadata_encoding == DEFAULT_METADATA_ENCODING else metadata_encoding
-
-    def keyval(line: str):
-        s = line[2:].strip()
-        if "=" in s:
-            k, v = s.split("=", 1)
-            return k.strip().upper(), v.strip()
-        return s.strip().upper(), ""
 
     with open(path, "r", encoding=text_encoding, errors="replace") as f:
         for raw in f:
             line = raw.strip()
             if not line:
                 continue
-            if line.upper().startswith("##END"):
-                break
             if line.startswith("##"):
-                k, v = keyval(line)
-                meta[k] = v
-                if k == "XYDATA":
-                    in_xy = True
-                continue
-            if in_xy:
+                body = line[2:]
+                key, _, val = body.partition("=")
+                key = key.strip().upper()
+                val = val.strip()
+                if key == "END":
+                    break
+                if key in ("XYDATA", "XYPOINTS"):
+                    table_kind = key
+                    headers[key] = val
+                    current_header = None
+                    continue
+                if table_kind is not None:
+                    # Additional records after the data table are not data.
+                    table_kind = "FINISHED"
+                headers[key] = val
+                current_header = key
+            elif table_kind in ("XYDATA", "XYPOINTS"):
                 data_lines.append(line)
+            elif current_header in ("$SV_METADATA_UTF8_BASE64", "$SV_METADATA_ZLIB_BASE64"):
+                headers[current_header] += line
 
     if not data_lines:
         raise RuntimeError(UI_TEXT["runtime_jcamp_no_data"])
 
-    firstx = float(meta.get("FIRSTX", "0"))
-    deltax = float(meta.get("DELTAX", "1"))
-    npoints = int(meta.get("NPOINTS", "0") or "0")
-    yfactor = float(meta.get("YFACTOR", "1"))
-    if npoints <= 0:
-        npoints = 10**9
+    table = "XYPOINTS" if "XYPOINTS" in headers and table_kind in ("XYPOINTS", "FINISHED") else "XYDATA"
+    # Prefer whichever data table was encountered when collecting the rows.
+    # The exporter writes exactly one data table per file.
+    if "XYDATA" in headers and "XYPOINTS" not in headers:
+        table = "XYDATA"
 
-    packed = any(re.search(r"\d[+-]\d", ln) and (" " not in ln) for ln in data_lines[:25])
+    try:
+        npoints = int(headers.get("NPOINTS", "0") or "0")
+        xfactor = float(headers.get("XFACTOR", "1") or "1")
+        yfactor = float(headers.get("YFACTOR", "1") or "1")
+        if not np.isfinite(xfactor) or not np.isfinite(yfactor):
+            raise ValueError(UI_TEXT["jcamp_nonfinite_factor"])
+    except (ValueError, TypeError) as exc:
+        raise ValueError(UI_TEXT["jcamp_invalid_numeric_header"].format(reason=exc)) from exc
 
-    ys: List[float] = []
-
-    if packed:
-        for ln in data_lines:
-            nums = re.findall(r"[+-]?\d+", ln)
-            if len(nums) >= 2:
-                for s in nums[1:]:
-                    ys.append(float(int(s)))
+    if table == "XYDATA":
+        packed = any(
+            re.search(r"\d[+-]\d", ln) and not re.search(r"\s", ln) and not re.search(r"[eEdD][+-]\d", ln)
+            for ln in data_lines[:25]
+        )
+        ys: List[float] = []
+        if packed:
+            # Backward compatibility with the legacy simple signed-integer PAC reader.
+            for ln in data_lines:
+                nums = re.findall(r"[+-]?\d+", ln)
+                if len(nums) >= 2:
+                    ys.extend(float(int(part)) for part in nums[1:])
+        else:
+            for ln in data_lines:
+                parts = re.split(r"[,;\s]+", ln.strip())
+                if len(parts) >= 2:
+                    for part in parts[1:]:
+                        try:
+                            ys.append(float(part.replace("D", "E").replace("d", "e")))
+                        except ValueError:
+                            pass
+        if len(ys) < 2:
+            raise RuntimeError(UI_TEXT["runtime_jcamp_unknown_compression"])
+        if npoints > 0 and len(ys) < npoints:
+            raise ValueError(UI_TEXT["jcamp_truncated_xydata"].format(actual=len(ys), expected=npoints))
+        if npoints > 0:
+            ys = ys[:npoints]
+        try:
+            firstx = float(headers.get("FIRSTX", "0"))
+            if "DELTAX" in headers:
+                deltax = float(headers["DELTAX"])
+            elif npoints > 1 and "LASTX" in headers:
+                deltax = (float(headers["LASTX"]) - firstx) / (npoints - 1)
+            else:
+                deltax = 1.0
+        except ValueError as exc:
+            raise ValueError(UI_TEXT["jcamp_invalid_x_header"].format(reason=exc)) from exc
+        # FIRSTX and DELTAX are already the actual X values. XFACTOR
+        # only applies to X numbers explicitly stored in the data table.
+        x = firstx + np.arange(len(ys), dtype=float) * deltax
+        y = np.asarray(ys, dtype=float) * yfactor
     else:
+        xs: List[float] = []
+        ys: List[float] = []
         for ln in data_lines:
-            parts = ln.replace(",", " ").replace(";", " ").split()
-            if len(parts) >= 2:
-                for tok in parts[1:]:
-                    try:
-                        tok2 = tok.replace("D", "E").replace("d", "e")
-                        ys.append(float(tok2))
-                    except ValueError:
-                        pass
+            parts = [p for p in re.split(r"[,;\s]+", ln) if p]
+            if len(parts) % 2:
+                raise ValueError(UI_TEXT["jcamp_invalid_xypoints_row"])
+            for idx in range(0, len(parts), 2):
+                try:
+                    xs.append(float(parts[idx].replace("D", "E").replace("d", "e")))
+                    ys.append(float(parts[idx + 1].replace("D", "E").replace("d", "e")))
+                except ValueError as exc:
+                    raise ValueError(UI_TEXT["jcamp_invalid_xypoints_number"]) from exc
+        if len(xs) < 2:
+            raise RuntimeError(UI_TEXT["runtime_jcamp_unknown_compression"])
+        if npoints > 0 and len(xs) != npoints:
+            raise ValueError(UI_TEXT["jcamp_xypoints_count_mismatch"].format(actual=len(xs), expected=npoints))
+        x = np.asarray(xs, dtype=float) * xfactor
+        y = np.asarray(ys, dtype=float) * yfactor
 
-    if len(ys) < 10:
-        raise RuntimeError(UI_TEXT["runtime_jcamp_unknown_compression"])
+    title = headers.get("TITLE", os.path.basename(path))
+    xunit = headers.get("XUNITS", "1/CM")
+    yunit = headers.get("YUNITS", "")
+    sample_name = headers.get("$SV_SAMPLE_NAME", title)
+    sample_form = headers.get("$SV_SAMPLE_FORM", headers.get("SAMPLING PROCEDURE", ""))
+    spec_meta: Dict[str, Any] = {
+        "sample_name": sample_name,
+        "sample_form": sample_form,
+        "jcamp_headers": {k: v for k, v in headers.items()
+                          if k not in ("$SV_METADATA_UTF8_BASE64", "$SV_METADATA_ZLIB_BASE64")},
+    }
 
-    ys = ys[:npoints]
-    x = firstx + np.arange(len(ys)) * deltax
-    y = np.asarray(ys, dtype=float) * yfactor
+    # New SV files use losslessly compressed UTF-8 metadata. Continue reading
+    # original, uncompressed private metadata from previous development builds.
+    metadata_zlib_b64 = headers.get("$SV_METADATA_ZLIB_BASE64", "")
+    metadata_utf8_b64 = headers.get("$SV_METADATA_UTF8_BASE64", "")
+    if metadata_zlib_b64 or metadata_utf8_b64:
+        try:
+            if metadata_zlib_b64:
+                compressed = base64.b64decode(metadata_zlib_b64, validate=True)
+                decompressor = zlib.decompressobj()
+                # Bound decompression when opening untrusted external DX files.
+                decoded = decompressor.decompress(compressed, 32 * 1024 * 1024 + 1)
+                if (len(decoded) > 32 * 1024 * 1024 or not decompressor.eof
+                        or decompressor.unconsumed_tail or decompressor.unused_data):
+                    raise ValueError(UI_TEXT["jcamp_invalid_compressed_metadata"])
+            else:
+                decoded = base64.b64decode(metadata_utf8_b64, validate=True)
+            original = json.loads(decoded.decode("utf-8"))
+            if isinstance(original, dict):
+                spec_meta["sv_original_metadata"] = original
+                # Recover accented sample names and the original descriptive title.
+                base_meta = original.get("spectrum_metadata", {})
+                if isinstance(base_meta, dict):
+                    spec_meta["sample_name"] = str(base_meta.get("sample_name") or sample_name)
+                    spec_meta["sample_form"] = str(base_meta.get("sample_form") or sample_form)
+                title = str(original.get("original_title") or title)
+                # Use the same internal INFO representation as native OPUS.
+                # The GUI does not distinguish binary OPUS INFO from SV DX INFO.
+                fields = base_meta.get("info_fields", []) if isinstance(base_meta, dict) else []
+                if isinstance(fields, list):
+                    spec_meta["info_fields"] = [
+                        {"code": str(item.get("code", "")),
+                         "label": str(item.get("label", "")),
+                         "value": str(item.get("value", ""))}
+                        for item in fields if isinstance(item, dict)
+                        and (item.get("label") or item.get("value"))
+                    ][:99]
+        except (ValueError, UnicodeError, TypeError, KeyError, zlib.error):
+            # Optional private metadata must never block the spectrum itself.
+            pass
 
-    title = meta.get("TITLE", os.path.basename(path))
-    xunit = meta.get("XUNITS", "1/CM")
-    yunit = meta.get("YUNITS", "")
+    # Compatibility fallback for SV files where only the readable INFO LDRs
+    # survive. Their ASCII form is lossy; the compressed payload takes priority.
+    if "info_fields" not in spec_meta:
+        recovered = []
+        for key, value in headers.items():
+            match = re.fullmatch(r"\$SV_INFO_(I\d{2})", key)
+            if not match:
+                continue
+            label, separator, field_value = value.partition(": ")
+            recovered.append({"code": match.group(1),
+                              "label": label if separator else match.group(1),
+                              "value": field_value if separator else value})
+        if recovered:
+            spec_meta["info_fields"] = recovered
 
-    sampling = meta.get("SAMPLING PROCEDURE", "")
+    return Spectrum(x=x, y=y, title=title, xunit=xunit,
+                    yunit=yunit, meta=spec_meta, path=path)
 
-    return Spectrum(
-        x=x, y=y,
-        title=title,
-        xunit=xunit,
-        yunit=yunit,
-        meta={"sample_name": title, "sample_form": sampling},
-        path=path
+
+# --- Portable JCAMP-DX writer (one active spectrum, not the displayed zoom) ---
+
+def _jcamp_ascii(value: Any) -> str:
+    """ASCII compatibility for conventional JCAMP header values.
+
+    The lossless original Unicode metadata is also stored in a private
+    UTF-8/Base64 record, so no information is discarded from the export.
+    """
+    value = str(value if value is not None else "")
+    value = " ".join(value.replace("\r", " ").replace("\n", " ").split())
+    value = unicodedata.normalize("NFKD", value)
+    value = "".join(c for c in value if not unicodedata.combining(c))
+    value = value.encode("ascii", "replace").decode("ascii")
+    # JCAMP interprets '$$' as the start of a comment, even in text fields.
+    return value.replace("$$", "$ $")
+
+
+def _jcamp_number(value: Any) -> str:
+    """17 significant digits round-trip binary64 without avoidable truncation.
+
+    In scientific notation, we use a capital letter E in accordance with the
+    official JCAMP-DX recommendation.
+    """
+    return format(float(value), ".17g").replace("e", "E")
+
+
+def _jcamp_source_format(path: str) -> str:
+    if is_opus_like(path):
+        return "OPUS"
+    if is_jcamp_like(path):
+        return "JCAMP-DX"
+    if is_dpt_like(path):
+        return "DPT"
+    return "UNKNOWN"
+
+
+def _jcamp_public_units(spec: Spectrum) -> tuple:
+    xunit = str(spec.xunit or "1/CM").strip()
+    if ("cm" in xunit.lower() and ("-1" in xunit or "⁻¹" in xunit or "1/" in xunit.lower())) \
+            or xunit.upper() in {"1/CM", "CM-1", "CM^-1"}:
+        xunit = "1/CM"
+    yunit = str(spec.yunit or "ARBITRARY UNITS").strip()
+    canonical = {
+        "absorbance": "ABSORBANCE",
+        "transmittance": "TRANSMITTANCE",
+        "reflectance": "REFLECTANCE",
+        "kubelka–munk": "KUBELKA-MUNK",
+        "kubelka-munk": "KUBELKA-MUNK",
+    }
+    yunit = canonical.get(yunit.casefold(), yunit)
+    return _jcamp_ascii(xunit).upper(), _jcamp_ascii(yunit).upper()
+
+
+def _jcamp_metadata_payload(spec: Spectrum) -> Dict[str, Any]:
+    meta = spec.meta or {}
+    if isinstance(meta.get("sv_original_metadata"), dict):
+        # Existing SpectraViewer DX: reuse the upstream payload rather than
+        # recursively nesting a copy of it after each re-export.
+        return dict(meta["sv_original_metadata"])
+
+    public_meta = {}
+    for key, val in meta.items():
+        if key in {"series_y", "series_store_indices", "sv_original_metadata"}:
+            continue
+        if isinstance(val, (str, int, float, bool, list, dict, type(None))):
+            public_meta[key] = val
+        elif isinstance(val, (np.integer, np.floating)):
+            public_meta[key] = val.item()
+        else:
+            public_meta[key] = str(val)
+
+    if "series_y" in meta:
+        index = int(meta.get("series_index", 0))
+        store = meta.get("series_store_indices", []) or []
+        public_meta["series_stored_index"] = (
+            int(store[index]) if index < len(store) else index + 1
+        )
+
+    return {
+        "original_source_filename": os.path.basename(spec.path or ""),
+        "original_source_format": _jcamp_source_format(spec.path),
+        "original_title": spec.title,
+        "original_xunits": spec.xunit,
+        "original_yunits": spec.yunit,
+        "spectrum_metadata": public_meta,
+    }
+
+
+def _jcamp_uniform_x(x: np.ndarray) -> bool:
+    """Use XYDATA only if reconstructed X values match original to high precision."""
+    if x.size < 2:
+        return False
+    step = (float(x[-1]) - float(x[0])) / (x.size - 1)
+    if not np.isfinite(step) or step == 0:
+        return False
+    # Differences are judged against the sample spacing, not X's large offset.
+    rebuilt = float(x[0]) + np.arange(x.size, dtype=float) * step
+    tolerance = max(abs(step) * 1e-10, 1e-11)
+    return bool(np.max(np.abs(x - rebuilt)) <= tolerance)
+
+
+def _jcamp_append_ldr(lines: List[str], key: str, value: Any):
+    """Write a plain-text LDR with short, ASCII continuation lines."""
+    prefix = f"##{key}="
+    words = _jcamp_ascii(value).split()
+    line = prefix
+    for word in words:
+        proposed = (line + (" " if line != prefix else "") + word)
+        if len(proposed) > 78 and line != prefix:
+            lines.append(line)
+            line = word
+        else:
+            line = proposed
+    lines.append(line)
+
+
+def create_jcamp_dx(spec: Spectrum) -> str:
+    """Export a single 1D spectrum to ASCII JCAMP-DX with AFFN data tables.
+
+    X and Y are the original numeric arrays of the active spectrum; view zoom,
+    X-axis inversion and color are not involved. No interpolation is performed.
+    """
+    x = np.asarray(spec.x, dtype=float).ravel()
+    y = np.asarray(spec.y, dtype=float).ravel()
+    if len(x) != len(y) or len(x) < 2:
+        raise ValueError(UI_TEXT["jcamp_export_xy_required"])
+    if not np.all(np.isfinite(x)) or not np.all(np.isfinite(y)):
+        raise ValueError(UI_TEXT["jcamp_export_nonfinite"])
+
+    uniform = _jcamp_uniform_x(x)
+    table = "XYDATA" if uniform else "XYPOINTS"
+    xunit, yunit = _jcamp_public_units(spec)
+    source_headers = (spec.meta or {}).get("jcamp_headers", {})
+
+    lines: List[str] = []
+    # Some SpectraGryph versions misinterpret continuation lines in TITLE.
+    # The complete Unicode original is preserved in the private metadata.
+    lines.append("##TITLE=" + _jcamp_ascii(spec.title))
+    lines.append("##JCAMP-DX=5.01")
+    lines.append("##DATA TYPE=INFRARED SPECTRUM")
+    # Deliberately omit DATA CLASS: control V1 showed that even adding this
+    # optional header to a known-working OPUS DX breaks import in OPUS 8.2.
+    # The actual table descriptor (XYDATA or XYPOINTS) remains unambiguous.
+    # Re-emit common standardized metadata from source JCAMP without
+    # inheriting obsolete data offsets, compression or spectral parameters.
+    transferable = (
+        "ORIGIN", "OWNER", "DATE", "TIME", "LONGDATE", "STATE",
+        "SAMPLE DESCRIPTION", "SAMPLING PROCEDURE", "RESOLUTION",
+        "SPECTROMETER DATA SYSTEM", "INSTRUMENTAL PARAMETERS",
+        "CAS NAME", "IUPAC NAME", "MOLFORM",
     )
+    if isinstance(source_headers, dict):
+        for key in transferable:
+            if source_headers.get(key):
+                _jcamp_append_ldr(lines, key, source_headers[key])
+    if (not (isinstance(source_headers, dict) and source_headers.get("SAMPLE DESCRIPTION"))
+            and spec.meta and spec.meta.get("sample_name")):
+        _jcamp_append_ldr(lines, "SAMPLE DESCRIPTION", spec.meta["sample_name"])
+
+    lines.append(f"##XUNITS={xunit}")
+    lines.append(f"##YUNITS={yunit}")
+    lines.append("##XFACTOR=1")
+    lines.append("##YFACTOR=1")
+    lines.append(f"##FIRSTX={_jcamp_number(x[0])}")
+    lines.append(f"##LASTX={_jcamp_number(x[-1])}")
+    lines.append(f"##FIRSTY={_jcamp_number(y[0])}")
+    lines.append(f"##MINX={_jcamp_number(np.min(x))}")
+    lines.append(f"##MAXX={_jcamp_number(np.max(x))}")
+    lines.append(f"##MINY={_jcamp_number(np.min(y))}")
+    lines.append(f"##MAXY={_jcamp_number(np.max(y))}")
+    lines.append(f"##NPOINTS={len(x)}")
+    if uniform:
+        step = (float(x[-1]) - float(x[0])) / (len(x) - 1)
+        lines.append(f"##DELTAX={_jcamp_number(step)}")
+
+    lines.append(f"##$SV_EXPORTER={APP_NAME} {VERSION_NUMBER}")
+    lines.append("##$SV_EXPORT_TIME_UTC=" + datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    _jcamp_append_ldr(lines, "$SV_SOURCE_FORMAT", _jcamp_source_format(spec.path))
+    _jcamp_append_ldr(lines, "$SV_SOURCE_FILENAME", os.path.basename(spec.path or ""))
+    if spec.meta:
+        for key, label in (("sample_name", "$SV_SAMPLE_NAME"),
+                           ("sample_form", "$SV_SAMPLE_FORM")):
+            if spec.meta.get(key):
+                _jcamp_append_ldr(lines, label, spec.meta[key])
+        for entry in spec.meta.get("info_fields", []) or []:
+            code = str(entry.get("code", ""))
+            if re.fullmatch(r"I\d{2}", code) and (entry.get("label") or entry.get("value")):
+                _jcamp_append_ldr(
+                    lines, "$SV_INFO_" + code,
+                    f"{entry.get('label', '')}: {entry.get('value', '')}",
+                )
+
+    payload = _jcamp_metadata_payload(spec)
+    json_bytes = json.dumps(payload, ensure_ascii=False, separators=(",", ":"),
+                            allow_nan=False).encode("utf-8")
+    # Lossless zlib compression keeps the full Unicode metadata but reduces
+    # the length and number of continuation lines seen by older DX importers.
+    # The key explicitly identifies the new encoding; the reader above also
+    # understands the old uncompressed UTF8/Base64 format.
+    encoded = base64.b64encode(zlib.compress(json_bytes, level=9)).decode("ascii")
+    lines.append("##$SV_METADATA_ZLIB_BASE64=")
+    lines.extend(encoded[i:i + 72] for i in range(0, len(encoded), 72))
+
+    if uniform:
+        lines.append("##XYDATA=(X++(Y..Y))")
+        # Each row begins with its real X checkpoint and continues with
+        # corresponding Y values. All values are plain AFFN with spaces.
+        idx = 0
+        while idx < x.size:
+            words = [_jcamp_number(x[idx])]
+            start = idx
+            while idx < x.size:
+                value = _jcamp_number(y[idx])
+                if idx > start and sum(map(len, words)) + len(words) + len(value) > 78:
+                    break
+                words.append(value)
+                idx += 1
+            lines.append(" ".join(words))
+    else:
+        lines.append("##XYPOINTS=(XY..XY)")
+        # Explicit pairs ensure nonuniform X arrays are not interpolated.
+        line = ""
+        for xx, yy in zip(x, y):
+            pair = f"{_jcamp_number(xx)},{_jcamp_number(yy)}"
+            if line and len(line) + 1 + len(pair) > 78:
+                lines.append(line)
+                line = pair
+            else:
+                line = (line + " " + pair) if line else pair
+        if line:
+            lines.append(line)
+    lines.append("##END=")
+    return "\n".join(lines) + "\n"
+
+
+def save_jcamp_dx_file(spec: Spectrum, destination: str):
+    """Save atomically, rejecting any attempt to overwrite the source file."""
+    source = os.path.abspath(spec.path) if spec.path else ""
+    destination = os.path.abspath(destination)
+    if source and (os.path.normcase(source) == os.path.normcase(destination)
+                   or (os.path.exists(destination) and os.path.samefile(source, destination))):
+        raise ValueError(UI_TEXT["save_jcamp_same_source"])
+
+    content = create_jcamp_dx(spec)
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="ascii", newline="\r\n", delete=False,
+            dir=os.path.dirname(destination), prefix=".spectraviewer_", suffix=".tmp",
+        ) as f:
+            temporary_path = f.name
+            f.write(content)
+        os.replace(temporary_path, destination)
+    finally:
+        if temporary_path and os.path.isfile(temporary_path):
+            os.unlink(temporary_path)
+
 
 def read_dpt_simple(path: str) -> Spectrum:
     xs = []
@@ -1169,6 +1619,15 @@ def scan_folder(folder: str, recursive: bool) -> List[str]:
     out.sort(key=lambda s: s.lower())
     return out
 
+# A small decorator keeps slow GUI operations clearly marked while preserving
+# their synchronous return values and error handling.
+def busy_operation(method):
+    @wraps(method)
+    def wrapper(self, *args, **kwargs):
+        with self.busy_ui():
+            return method(self, *args, **kwargs)
+    return wrapper
+
 # Single file mode implementation: context rebuild + navigation button state (2026-06-14)
 # -------- UI --------
 
@@ -1185,17 +1644,26 @@ class App(_BaseTk):
         try:
             self.iconbitmap(resource_path(r"assets\SpectraViewer.ico"))
         except Exception as e:
-            print("Icon not set:", e)
+            print(UI_TEXT["console_icon_not_set"].format(error=e))
 
         self.settings_path = settings_file_path()
         self.settings = self.load_settings()
 
         self.folder_var = tk.StringVar(value=self.get_setting("open", "last_path", ""))
+        # The editable Path field is not necessarily the accepted file-list context.
+        # Preserve the last accepted/recoverable path separately for INI persistence.
+        self._committed_path = self.folder_var.get().strip()
+        self._active_folder_path = ""
+        self._excluded_large_opus_count = 0
+        self._busy_depth = 0
         self.recursive_var = tk.BooleanVar(value=self.get_setting_bool("open", "recursive", True))
         self.single_file_var = tk.BooleanVar(value=self.get_setting_bool("open", "single_file", False))
         self._recursive_before_single = bool(self.recursive_var.get())
         self.invert_x_var = tk.BooleanVar(value=self.get_setting_bool("view", "invert_x", False))
         self.crosshair_var = tk.BooleanVar(value=self.get_setting_bool("view", "crosshair", True))
+        # Optional, unlabeled axis subdivisions. No extra UI controls needed.
+        self.x_minor_ticks = self.get_setting_bool("view", "x_minor_ticks", True)
+        self.y_minor_ticks = self.get_setting_bool("view", "y_minor_ticks", True)
         self.status_var = tk.StringVar(value=UI_TEXT["initial_status"])
         self.series_counter_var = tk.StringVar(value="1/1")
         self.line_color = self.get_setting("view", "line_color", DEFAULT_LINE_COLOR) or DEFAULT_LINE_COLOR
@@ -1218,15 +1686,9 @@ class App(_BaseTk):
         self.large_opus_warn_bytes = int(float(self.large_opus_warn_mb) * 1024 * 1024)
 
         if not self._warn_file_count_valid:
-            print(
-                "Invalid [advanced] warn_file_count in SpectraViewer.ini; "
-                f"default {DEFAULT_WARN_FILE_COUNT} will be used."
-            )
+            print(UI_TEXT["console_invalid_warn_file_count"].format(default=DEFAULT_WARN_FILE_COUNT))
         if not self._large_opus_warn_mb_valid:
-            print(
-                "Invalid [advanced] large_opus_warn_mb in SpectraViewer.ini; "
-                f"default {DEFAULT_LARGE_OPUS_WARN_MB} MB will be used."
-            )
+            print(UI_TEXT["console_invalid_large_opus_warn_mb"].format(default=DEFAULT_LARGE_OPUS_WARN_MB))
 
         self.metadata_encoding = normalize_metadata_encoding(
             self.get_setting("metadata", "encoding", DEFAULT_METADATA_ENCODING)
@@ -1238,10 +1700,6 @@ class App(_BaseTk):
         self.info_win = None
         self.info_text = None
 
-        # Large OPUS warnings are intentionally once-per-file per session.
-        # A folder/list confirmation approves every large OPUS file that was
-        # included in that confirmation, so navigation does not nag again.
-        self._approved_large_opus_paths = set()
         self._build_ui()
         self._bind_keys()
         self._setup_dnd()  # Drag & Drop init (if available)
@@ -1279,6 +1737,53 @@ class App(_BaseTk):
             parent=self,
         )
 
+    @contextmanager
+    def busy_ui(self):
+        """Show a wait cursor and visible status before a synchronous operation.
+
+        The explicit update() is essential: update_idletasks() alone does not
+        activate Tk's busy overlay reliably on Windows. This does NOT make
+        the application responsive during a long blocking file read.
+        """
+        first = self._busy_depth == 0
+        self._busy_depth += 1
+        busy_held = False
+        fallback_cursor = None
+        previous_status = None
+        try:
+            if first:
+                previous_status = self.status_var.get()
+                self.status_var.set(UI_TEXT["busy_status"])
+                try:
+                    self.tk.call("tk", "busy", "hold", self._w, "-cursor", "watch")
+                    busy_held = True
+                except tk.TclError:
+                    # Fallback on Tcl/Tk builds lacking the busy subcommand.
+                    fallback_cursor = str(self.cget("cursor"))
+                    self.configure(cursor="watch")
+
+                # Tk docs explicitly require update() after busy hold.
+                # Do this once at the START, never inside the long-running work.
+                self.update()
+            yield
+        finally:
+            self._busy_depth -= 1
+            if first:
+                try:
+                    if busy_held:
+                        self.tk.call("tk", "busy", "forget", self._w)
+                    if fallback_cursor is not None:
+                        self.configure(cursor=fallback_cursor)
+                finally:
+                    # Keep any status written by the completed operation.
+                    if self.status_var.get() == UI_TEXT["busy_status"]:
+                        self.status_var.set(previous_status or "")
+                    self.update_idletasks()
+
+    @busy_operation
+    def scan_folder_busy(self, folder: str, recursive: bool) -> List[str]:
+        return scan_folder(folder, recursive)
+
     # --- Settings / INI memory ---
     def load_settings(self) -> configparser.ConfigParser:
         cfg = configparser.ConfigParser()
@@ -1286,7 +1791,7 @@ class App(_BaseTk):
             try:
                 cfg.read(settings_file_path(), encoding="utf-8")
             except Exception as e:
-                print("Settings not loaded:", e)
+                print(UI_TEXT["console_settings_not_loaded"].format(error=e))
         return cfg
 
     def get_setting(self, section: str, key: str, default: str = "") -> str:
@@ -1318,11 +1823,14 @@ class App(_BaseTk):
             "line_width": str(self.line_width),
             "crosshair": str(bool(self.crosshair_var.get())).lower(),
             "invert_x": str(bool(self.invert_x_var.get())).lower(),
+            "x_minor_ticks": str(bool(self.x_minor_ticks)).lower(),
+            "y_minor_ticks": str(bool(self.y_minor_ticks)).lower(),
         }
 
-        last_path = self.folder_var.get().strip()
+        # Do not save an uncommitted Path-field edit or a cancelled folder choice.
+        last_path = self._committed_path
         active_file = self.get_active_file_path() if hasattr(self, "current") else ""
-        if bool(self.single_file_var.get()) and active_file:
+        if bool(self.single_file_var.get()) and active_file and self.files:
             last_path = active_file
 
         cfg["open"] = {
@@ -1348,84 +1856,73 @@ class App(_BaseTk):
             with open(self.settings_path, "w", encoding="utf-8") as f:
                 cfg.write(f)
         except Exception as e:
-            print("Settings not saved:", e)
+            print(UI_TEXT["console_settings_not_saved"].format(error=e))
 
     def on_close(self):
         self.save_settings()
         self.destroy()
 
     def restore_last_path_on_startup(self):
-        """Restore the last file or folder from SpectraViewer.ini without disruptive startup warnings."""
-        last_path = (self.folder_var.get() or "").strip()
+        """Restore the saved path, applying OPUS size choices to the restored list.
+
+        Do not bypass the size warning simply because loading is automatic.
+        If cancelled, keep the saved path visible for a later manual attempt.
+        """
+        last_path = (self._committed_path or "").strip()
         if not last_path:
             self.status_var.set(UI_TEXT["initial_status"])
             return
 
         p = os.path.abspath(os.path.expanduser(last_path))
-
         if not os.path.exists(p):
             self.status_var.set(UI_TEXT["last_path_not_found_status"])
             return
 
-        # Folder restore. Do not show startup message boxes; use the status line instead.
         if os.path.isdir(p):
-            self.folder_var.set(p)
             if bool(self.single_file_var.get()):
                 self.status_var.set(UI_TEXT["last_path_single_folder_status"])
                 return
-
-            files = scan_folder(p, recursive=bool(self.recursive_var.get()))
-            if not files:
-                self.status_var.set(UI_TEXT["last_path_no_spectrum_status"])
-                return
-
-            if len(files) > self.warn_file_count:
-                self.status_var.set(UI_TEXT["last_path_too_many_status"].format(count=len(files)))
-                return
-
-            self.files = files
-            self.idx = 0
-            self.update_counter()
-            self.load_current()
-            self.status_var.set(UI_TEXT["last_path_restored_status"].format(path=p))
-            return
-
-        # File restore.
-        if os.path.isfile(p):
+            folder, preferred = p, ""
+        elif os.path.isfile(p):
             if not is_supported_spectrum(p):
                 self.status_var.set(UI_TEXT["last_path_unsupported_status"])
                 return
-
             if bool(self.single_file_var.get()):
-                self.open_single_file(p)
-                self.status_var.set(UI_TEXT["last_path_restored_status"].format(path=p))
+                if self.open_single_file(p):
+                    self.status_var.set(UI_TEXT["last_path_restored_status"].format(path=p))
+                elif self.current is None and not self.files:
+                    self.status_var.set(UI_TEXT["startup_large_opus_cancelled"])
                 return
-
-            folder = os.path.dirname(p)
-            self.folder_var.set(folder)
-            files = scan_folder(folder, recursive=bool(self.recursive_var.get()))
-
-            if not files:
-                self.status_var.set(UI_TEXT["last_path_no_spectrum_status"])
-                return
-
-            if len(files) > self.warn_file_count:
-                self.status_var.set(UI_TEXT["last_path_too_many_status"].format(count=len(files)))
-                return
-
-            self.files = files
-            target = os.path.normcase(os.path.abspath(p))
-            self.idx = 0
-            for i, item in enumerate(self.files):
-                if os.path.normcase(os.path.abspath(str(item))) == target:
-                    self.idx = i
-                    break
-            self.update_counter()
-            self.load_current()
-            self.status_var.set(UI_TEXT["last_path_restored_status"].format(path=p))
+            folder, preferred = os.path.dirname(p), p
+        else:
+            self.status_var.set(UI_TEXT["last_path_not_found_status"])
             return
 
-        self.status_var.set(UI_TEXT["last_path_not_found_status"])
+        files = self.scan_folder_busy(folder, recursive=bool(self.recursive_var.get()))
+        if not files:
+            self.status_var.set(UI_TEXT["last_path_no_spectrum_status"])
+            return
+
+        # Preserve the previous non-intrusive startup file-count policy.
+        # Large OPUS choices are different: they must be shown on startup.
+        if len(files) > self.warn_file_count:
+            self.status_var.set(UI_TEXT["last_path_too_many_status"].format(count=len(files)))
+            return
+
+        selection = self.select_large_opus_files(
+            files, UI_TEXT["folder_context_origin"], preferred_single_path=preferred,
+        )
+        if selection is None:
+            self.status_var.set(UI_TEXT["startup_large_opus_cancelled"])
+            return
+
+        selected, excluded = selection
+        self._accept_file_list(selected, folder, preferred, excluded)
+        if self.current is not None:
+            if excluded:
+                self._show_filtered_status()
+            else:
+                self.status_var.set(UI_TEXT["last_path_restored_status"].format(path=p))
 
     # --- Drag & Drop support ---
     def _setup_dnd(self):
@@ -1494,15 +1991,8 @@ class App(_BaseTk):
             # Same behavior as typing a path and pressing Enter (open_path).
             self.open_path(first)
 
-        # Update the path field: folder path for folders, parent folder for files.
-        try:
-            ap = os.path.abspath(os.path.expanduser(first))
-            if os.path.isdir(ap):
-                self.folder_var.set(ap)
-            elif os.path.isfile(ap):
-                self.folder_var.set(os.path.dirname(ap))
-        except Exception:
-            pass
+        # Opening methods update Path only after an accepted change.
+        # An unsuccessful drop must not replace the displayed active folder.
 
         return "break"
 
@@ -1538,7 +2028,7 @@ class App(_BaseTk):
         self.prev_btn.pack(side=tk.LEFT)
         self.next_btn = ttk.Button(nav, text=UI_TEXT["next_button"], command=self.next)
         self.next_btn.pack(side=tk.LEFT, padx=(6, 12))
-        self.save_btn = ttk.Button(nav, text=UI_TEXT["save_image_button"], command=self.save_current_plot)
+        self.save_btn = ttk.Button(nav, text=UI_TEXT["export_image_button"], command=self.save_current_plot)
         self.save_btn.pack(side=tk.LEFT, padx=(6, 12))
         #self.clr_btn = ttk.Button(nav, text=UI_TEXT["color_button"], command=self.choose_color).pack(side=tk.LEFT, padx=(6, 12))
         self.clr_btn = ttk.Button(nav, text=UI_TEXT["color_button"], command=self.choose_color)
@@ -1570,6 +2060,10 @@ class App(_BaseTk):
         fig.subplots_adjust(left=0.07, right=0.99, top=0.97, bottom=0.14)
         self.ax.set_xlabel(UI_TEXT["axis_wavenumber"])
         self.ax.set_ylabel(UI_TEXT["axis_intensity"])
+        self.apply_minor_ticks()
+        # An empty session is not a 0..1 spectrum: keep the axes hidden until
+        # a file is successfully loaded. The canvas keeps its existing layout.
+        self.ax.set_visible(False)
 
         # Copyable header (filename / sample name / sample form)
         # mid grid: 3 rows (header, canvas, toolbar); the canvas expands.
@@ -1646,6 +2140,14 @@ class App(_BaseTk):
         self.info_btn.pack(side=tk.RIGHT, padx=(6, 4), pady=(0, 1))
         self.info_btn.state(["disabled"])
 
+        # JCAMP export lives in this lower row to preserve the minimum window
+        # width (the navigation/metadata row above is already crowded).
+        self.save_jcamp_btn = ttk.Button(
+            toolbar_row, text=UI_TEXT["save_jcamp_button"],
+            command=self.save_current_jcamp,
+        )
+        self.save_jcamp_btn.pack(side=tk.RIGHT, padx=(4, 4), pady=(0, 1))
+
         # Compact DataSeries navigation. It is always visible so the toolbar
         # geometry remains stable; for ordinary single spectra the arrows are
         # disabled and the counter reads 1/1.
@@ -1698,8 +2200,10 @@ class App(_BaseTk):
         self.bind("<Next>", self._on_page_down)                      # PageDown
         self.bind("<Home>", self._on_home)
         self.bind("<End>", self._on_end)
-        self.bind_all("<Control-s>", self._on_ctrl_s)
-        self.bind_all("<Control-S>", self._on_ctrl_s)
+        self.bind_all("<Control-e>", self._on_ctrl_e)
+        self.bind_all("<Control-E>", self._on_ctrl_e)
+        self.bind_all("<Control-Shift-e>", self._on_ctrl_shift_e)
+        self.bind_all("<Control-Shift-E>", self._on_ctrl_shift_e)
         self.bind_all("<Control-Shift-o>", self._on_ctrl_shift_o)   # mappa
         self.bind_all("<Control-Shift-O>", self._on_ctrl_shift_o)
         self.bind_all("<Control-o>", self._on_ctrl_o)               # file
@@ -1817,13 +2321,25 @@ class App(_BaseTk):
         self.series_next_btn.invoke()
         return "break"
 
-    def _on_ctrl_s(self, event=None):
-        if not getattr(self, "save_btn", None):
+    def _on_ctrl_e(self, event=None):
+        if event is not None and (event.state & 0x0001):
             return
-        self.save_btn.state(['pressed'])
-        self.save_btn.after(150, lambda: self.save_btn.state(['!pressed']))
-        self.save_btn.invoke()
-        #return "break"
+        btn = getattr(self, "save_jcamp_btn", None)
+        if btn is None:
+            return
+        btn.state(["pressed"])
+        btn.after(150, lambda: btn.state(["!pressed"]))
+        btn.invoke()
+        return "break"
+
+    def _on_ctrl_shift_e(self, event=None):
+        btn = getattr(self, "save_btn", None)
+        if btn is None:
+            return
+        btn.state(["pressed"])
+        btn.after(150, lambda: btn.state(["!pressed"]))
+        btn.invoke()
+        return "break"
 
     def _on_ctrl_shift_o(self, event=None):
         if not getattr(self, "fldr_btn", None):
@@ -1877,10 +2393,10 @@ class App(_BaseTk):
             )
             return
 
+        # open_folder commits the new Path only after warnings are accepted.
         self.open_folder(folder, recursive=self.recursive_var.get())
-        self.folder_var.set(folder)
 
-    def confirm_file_count(self, count: int, origin: str = "lista") -> bool:
+    def confirm_file_count(self, count: int, origin: str = UI_TEXT["selected_list_origin"]) -> bool:
         if count > MAX_FILE_COUNT:
             messagebox.showerror(
                 UI_TEXT["too_many_files_title"],
@@ -1899,87 +2415,154 @@ class App(_BaseTk):
     def _large_opus_path_key(self, path: str) -> str:
         return os.path.normcase(os.path.abspath(os.path.expanduser(str(path))))
 
-    def get_unapproved_large_opus_files(self, paths):
-        out = []
+    def get_large_opus_files(self, paths):
+        """Find every OPUS file over the INI threshold, including >100 MB files."""
+        large = []
         seen = set()
-
         for path in paths:
             p = os.path.abspath(os.path.expanduser(str(path)))
             key = self._large_opus_path_key(p)
-
-            if key in seen or key in self._approved_large_opus_paths:
+            if key in seen:
                 continue
             seen.add(key)
-
             if is_large_opus_file(p, self.large_opus_warn_bytes):
-                out.append(p)
+                large.append(p)
+        return large
 
-        return out
+    def _ask_large_opus_action(self, origin, large_files, total_count, small_count,
+                               preferred_single_path=""):
+        """Three-way modal choice: complete list, filtered list, or cancellation.
 
-    def approve_large_opus_files(self, paths):
-        for path in paths:
-            self._approved_large_opus_paths.add(
-                self._large_opus_path_key(path)
-            )
-
-    def confirm_large_opus_files(
-        self,
-        paths,
-        origin: str,
-        preferred_single_path: str = "",
-    ) -> bool:
+        No choice is implied by closing the window or pressing Escape.
         """
-        Warn before accepting large OPUS files.
-
-        If exactly one unapproved large file is the explicitly requested file,
-        show the individual warning. Otherwise show one aggregate warning for
-        the generated/selected list. Accepted files are not warned about again
-        during the current SpectraViewer session.
-        """
-        large_files = self.get_unapproved_large_opus_files(paths)
-        if not large_files:
-            return True
-
-        preferred_key = (
-            self._large_opus_path_key(preferred_single_path)
-            if preferred_single_path else ""
-        )
-
-        if (
-            len(large_files) == 1
-            and preferred_key
-            and self._large_opus_path_key(large_files[0]) == preferred_key
-        ):
-            path = large_files[0]
+        hard_count = 0
+        for path in large_files:
             try:
-                size_mb = os.path.getsize(path) / (1024 * 1024)
+                if os.path.getsize(path) > MAX_OPUS_FILE_BYTES:
+                    hard_count += 1
+            except OSError:
+                pass
+
+        dialog = tk.Toplevel(self)
+        dialog.title(UI_TEXT["large_opus_title"] if total_count == 1
+                     else UI_TEXT["large_opus_list_title"])
+        dialog.transient(self)
+        dialog.resizable(False, False)
+        outer = ttk.Frame(dialog, padding=16)
+        outer.pack(fill="both", expand=True)
+
+        def paragraph(value):
+            ttk.Label(outer, text=value, wraplength=520,
+                      justify="left").pack(fill="x", pady=(0, 12))
+
+        paragraph(UI_TEXT["large_opus_choice_intro"].format(
+            origin=origin, count=len(large_files), threshold_mb=self.large_opus_warn_mb))
+        if preferred_single_path and len(large_files) == 1 and (
+            self._large_opus_path_key(large_files[0]) ==
+            self._large_opus_path_key(preferred_single_path)
+        ):
+            try:
+                size_mb = os.path.getsize(large_files[0]) / (1024 * 1024)
             except OSError:
                 size_mb = float(self.large_opus_warn_mb)
+            paragraph(UI_TEXT["large_opus_choice_single"].format(
+                filename=os.path.basename(large_files[0]), size_mb=size_mb))
+        if hard_count:
+            paragraph(UI_TEXT["large_opus_choice_hard"].format(
+                count=hard_count, max_mb=MAX_OPUS_FILE_MB))
+        paragraph(UI_TEXT["large_opus_choice_small_count"].format(
+            kept=small_count, total=total_count) if small_count else
+            UI_TEXT["large_opus_choice_no_small"])
 
-            ok = messagebox.askyesno(
-                UI_TEXT["large_opus_title"],
-                UI_TEXT["large_opus_single_confirm"].format(
-                    filename=os.path.basename(path),
-                    size_mb=size_mb,
-                    threshold_mb=self.large_opus_warn_mb,
-                ),
-                parent=self,
-            )
-        else:
-            ok = messagebox.askyesno(
-                UI_TEXT["large_opus_list_title"],
-                UI_TEXT["large_opus_list_confirm"].format(
-                    origin=origin,
-                    count=len(large_files),
-                    threshold_mb=self.large_opus_warn_mb,
-                ),
-                parent=self,
-            )
+        result = {"choice": "cancel"}
+        def choose(choice):
+            result["choice"] = choice
+            dialog.destroy()
 
-        if ok:
-            self.approve_large_opus_files(large_files)
+        full_button = ttk.Button(
+            outer, text=UI_TEXT["large_opus_choice_all_button"],
+            command=lambda: choose("all"))
+        full_button.pack(fill="x", pady=(0, 6))
+        filtered_button = ttk.Button(
+            outer, text=UI_TEXT["large_opus_choice_small_button"],
+            command=lambda: choose("small"))
+        filtered_button.pack(fill="x", pady=(0, 6))
+        if small_count == 0:
+            filtered_button.state(["disabled"])
+        ttk.Button(outer, text=UI_TEXT["large_opus_choice_cancel_button"],
+                   command=lambda: choose("cancel")).pack(fill="x")
 
-        return bool(ok)
+        dialog.protocol("WM_DELETE_WINDOW", lambda: choose("cancel"))
+        dialog.bind("<Escape>", lambda event: choose("cancel"))
+
+        # Enter activates the currently focused button, just like Space.
+        def on_enter(event):
+            if isinstance(event.widget, ttk.Button):
+                event.widget.invoke()
+                return "break"
+
+        dialog.bind("<Return>", on_enter)
+        dialog.bind("<KP_Enter>", on_enter)  # Numeric keypad Enter
+
+        # Native Tk placement: center over the SpectraViewer main window,
+        # keeping the dialog within the visible desktop when possible.
+        dialog.tk.call("tk::PlaceWindow", dialog._w, "widget", self._w)
+        dialog.grab_set()
+        full_button.focus_set()
+        self.wait_window(dialog)
+        return result["choice"]
+
+    def select_large_opus_files(self, paths, origin, preferred_single_path=""):
+        """Return (chosen_paths, excluded_count), or None when cancelled.
+
+        Filter on the configured INI warning threshold, not the hard 100 MB limit.
+        Every NEW list selection asks again, but file-by-file navigation does not.
+        """
+        paths = list(paths)
+        large = self.get_large_opus_files(paths)
+        if not large:
+            return paths, 0
+        large_keys = {self._large_opus_path_key(p) for p in large}
+        smaller = [p for p in paths if self._large_opus_path_key(p) not in large_keys]
+        action = self._ask_large_opus_action(
+            origin, large, len(paths), len(smaller), preferred_single_path)
+        if action == "all":
+            return paths, 0
+        if action == "small" and smaller:
+            return smaller, len(paths) - len(smaller)
+        return None
+
+    def _show_filtered_status(self):
+        if self._excluded_large_opus_count:
+            self.status_var.set(UI_TEXT["filtered_large_opus_status"].format(
+                count=len(self.files), excluded=self._excluded_large_opus_count,
+                threshold_mb=self.large_opus_warn_mb))
+
+    def _accept_file_list(self, files, folder, preferred="", excluded=0,
+                          persisted_path=None) -> bool:
+        """Atomically commit a list, its Path display and its INI path.
+
+        A failed read may show a file-specific error, but cannot roll back the
+        already accepted list (e.g. an OPUS file above the hard 100 MB limit).
+        """
+        files = list(files)
+        if not files:
+            return False
+        folder = os.path.abspath(os.path.expanduser(str(folder)))
+        target = self._large_opus_path_key(preferred) if preferred else ""
+        new_idx = next((i for i, item in enumerate(files)
+                        if self._large_opus_path_key(item) == target), 0)
+        self.files = files
+        self.idx = new_idx
+        self._excluded_large_opus_count = excluded
+        self._active_folder_path = folder
+        self._committed_path = persisted_path if persisted_path is not None else folder
+        self.folder_var.set(folder)
+        self.update_counter()
+        loaded = self.load_current()
+        if excluded and loaded:
+            self._show_filtered_status()
+        return True
 
     def choose_file(self):
         # Windows/Tk file dialog wildcards cannot precisely express the
@@ -1987,8 +2570,8 @@ class App(_BaseTk):
         # and the actual validation is done in Python.
         filetypes = [
             (UI_TEXT["all_supported_files"], "*.dx;*.jdx;*.dpt;*.0*;*.1*;*.2*;*.3*;*.4*;*.5*;*.6*;*.7*;*.8*;*.9*"),
-            ("JCAMP-DX (ASCII)", "*.dx;*.jdx"),
-            ("DPT (ASCII)", "*.dpt"),
+            (UI_TEXT["jcamp_ascii_filter"], "*.dx;*.jdx"),
+            (UI_TEXT["dpt_ascii_filter"], "*.dpt"),
             (UI_TEXT["opus_numeric_extension"], "*.0*;*.1*;*.2*;*.3*;*.4*;*.5*;*.6*;*.7*;*.8*;*.9*"),
             (UI_TEXT["all_files"], "*.*"),
         ]
@@ -2006,8 +2589,15 @@ class App(_BaseTk):
             if is_supported_spectrum(p)
         ]
         invalid_paths = [p for p in paths if p not in valid_paths]
+        inaccessible_paths = [p for p in invalid_paths if spectrum_file_access_error(p)]
+        if inaccessible_paths:
+            self._warn_inaccessible_spectrum(inaccessible_paths[0])
+            return
 
         if not valid_paths:
+            locked = next((p for p in paths if spectrum_file_access_error(p)), None)
+            if locked and self._warn_inaccessible_spectrum(locked):
+                return
             messagebox.showwarning(
                 UI_TEXT["unsupported_format_title"],
                 UI_TEXT["unsupported_selected_message"]
@@ -2028,12 +2618,13 @@ class App(_BaseTk):
         if not self.confirm_file_count(len(valid_paths), UI_TEXT["selected_list_origin"]):
             return
 
+        # A single file opens its folder context; that context has its own choice.
         if len(valid_paths) > 1:
-            if not self.confirm_large_opus_files(
-                valid_paths,
-                UI_TEXT["selected_list_origin"],
-            ):
+            selection = self.select_large_opus_files(
+                valid_paths, UI_TEXT["selected_list_origin"])
+            if selection is None:
                 return
+            selected_paths, excluded = selection
 
         if invalid_paths:
             max_show = 8
@@ -2053,36 +2644,27 @@ class App(_BaseTk):
 
         if len(valid_paths) == 1:
             path = valid_paths[0]
-            self.folder_var.set(os.path.dirname(path))
             self.open_file_with_context(path, recursive=self.recursive_var.get())
         else:
-            self.folder_var.set(os.path.dirname(valid_paths[0]))
-            self.files = [Path(p) for p in valid_paths]
-            self.files.sort()
-            self.idx = 0
-            self.load_current()
+            selected_paths = sorted([Path(p) for p in selected_paths])
+            self._accept_file_list(
+                selected_paths, os.path.dirname(str(selected_paths[0])), excluded=excluded)
 
     def load_custom_list(self, file_list):
-        self.files = []
-        
-        for p in file_list:
-            # Important: p is a string returned by the file dialog.
-            # The rest of the program expects Path objects in the list.
-            path_obj = Path(p)
-            
-            # Check that the path exists and is a file.
-            if path_obj.is_file():
-                # Add it to the list as a Path object.
-                self.files.append(path_obj)
-        
-        # Sort the Path objects.
-        self.files.sort()
-        
-        if self.files:
-            self.idx = 0
-            self.load_current()
-        else:
+        """Compatibility helper for externally prepared lists, using the same rules."""
+        files = sorted(Path(p) for p in file_list if Path(p).is_file()
+                       and is_supported_spectrum(str(p)))
+        if not files:
             messagebox.showwarning(UI_TEXT["warning_title"], UI_TEXT["no_loadable_file"])
+            return False
+        if not self.confirm_file_count(len(files)):
+            return False
+        selection = self.select_large_opus_files(files, UI_TEXT["selected_list_origin"])
+        if selection is None:
+            return False
+        selected, excluded = selection
+        return self._accept_file_list(selected, os.path.dirname(str(selected[0])),
+                                      excluded=excluded)
 
     def on_path_enter(self, _evt=None):
         """
@@ -2109,6 +2691,17 @@ class App(_BaseTk):
 
         return "break"
 
+    def _warn_inaccessible_spectrum(self, path: str) -> bool:
+        issue = spectrum_file_access_error(path)
+        if issue is None:
+            return False
+        messagebox.showwarning(
+            UI_TEXT["file_access_title"],
+            UI_TEXT["file_locked_message"].format(path=path, reason=str(issue)),
+            parent=self,
+        )
+        return True
+
     def open_path(self, path: str):
         if not path:
             return None
@@ -2117,6 +2710,8 @@ class App(_BaseTk):
 
         # Invalid path.
         if not os.path.exists(p):
+            if self._warn_inaccessible_spectrum(p):
+                return None
             messagebox.showwarning(UI_TEXT["invalid_path_title"], UI_TEXT["invalid_path_message"])
             return None
 
@@ -2136,6 +2731,8 @@ class App(_BaseTk):
         # File with a valid format.
         if os.path.isfile(p):
             if not is_supported_spectrum(p):
+                if self._warn_inaccessible_spectrum(p):
+                    return None
                 messagebox.showwarning(UI_TEXT["unsupported_format_title"], UI_TEXT["unsupported_path_message"])
                 return None
 
@@ -2157,54 +2754,28 @@ class App(_BaseTk):
         return ""
 
     def rebuild_context_from_current_file(self, recursive: bool) -> bool:
-        """Rebuild the surrounding folder context from the active spectrum file."""
+        """Rebuild the folder around the selected file without premature commits."""
         current_path = self.get_active_file_path()
         if not current_path or not os.path.isfile(current_path) or not is_supported_spectrum(current_path):
             self.update_counter()
             return False
 
         folder = os.path.dirname(current_path)
-        files = scan_folder(folder, recursive=recursive)
-
+        files = self.scan_folder_busy(folder, recursive=recursive)
         if not files:
-            messagebox.showwarning(
-                UI_TEXT["no_match_title"],
-                UI_TEXT["no_spectrum_at_path"]
-            )
-            self.update_counter()
+            messagebox.showwarning(UI_TEXT["no_match_title"], UI_TEXT["no_spectrum_at_path"])
             return False
-
         if not self.confirm_file_count(len(files), UI_TEXT["folder_context_origin"]):
-            self.update_counter()
-            self.status_var.set(
-                UI_TEXT["context_reload_cancelled"]
-            )
-            return False
-
-        if not self.confirm_large_opus_files(
-            files,
-            UI_TEXT["folder_context_origin"],
-            preferred_single_path=current_path,
-        ):
-            self.update_counter()
             self.status_var.set(UI_TEXT["context_reload_cancelled"])
             return False
-
-        self.folder_var.set(folder)
-        self.files = files
-
-        # Normalized, case-insensitive lookup: more robust for Windows paths,
-        # and it also works if list items are Path objects or strings.
-        target = os.path.normcase(os.path.abspath(current_path))
-        self.idx = 0
-        for i, item in enumerate(self.files):
-            if os.path.normcase(os.path.abspath(str(item))) == target:
-                self.idx = i
-                break
-
-        self.update_counter()
-        self.load_current()
-        return True
+        selection = self.select_large_opus_files(
+            files, UI_TEXT["folder_context_origin"], preferred_single_path=current_path)
+        if selection is None:
+            self.status_var.set(UI_TEXT["context_reload_cancelled"])
+            return False
+        selected, excluded = selection
+        return self._accept_file_list(selected, folder, preferred=current_path,
+                                      excluded=excluded)
 
     def on_single_file_toggle(self):
         if bool(self.single_file_var.get()):
@@ -2213,8 +2784,12 @@ class App(_BaseTk):
 
             # Single file mode must not leave a multi-file list active.
             # If a spectrum is currently active, immediately reduce the list to that one file.
-            if self.current is not None and self.current.path:
-                self.open_single_file(self.current.path)
+            active_path = self.get_active_file_path()
+            if active_path:
+                if not self.open_single_file(active_path):
+                    # The requested mode change was cancelled/rejected.
+                    self.single_file_var.set(False)
+                    self.recursive_chk.state(["!disabled"])
             else:
                 self.update_counter()
                 self.status_var.set(UI_TEXT["single_file_enabled_status"])
@@ -2227,65 +2802,56 @@ class App(_BaseTk):
             # rebuild the context around the current file
             # using the previously preserved recursive setting.
             if self.rebuild_context_from_current_file(recursive=restored_recursive):
-                mode = "recursive" if restored_recursive else "non-recursive"
+                mode = (UI_TEXT["mode_recursive"] if restored_recursive
+                        else UI_TEXT["mode_nonrecursive"])
                 self.status_var.set(UI_TEXT["single_file_disabled_rebuilt_status"].format(mode=mode))
             else:
+                # Cancellation must not leave the checkbutton inconsistent
+                # with the still-active single-file list.
+                if self.files:
+                    self.single_file_var.set(True)
+                    self.recursive_chk.state(["disabled"])
+                    self.recursive_var.set(bool(self._recursive_before_single))
                 self.status_var.set(UI_TEXT["single_file_disabled_restored_status"])
 
     def open_single_file(self, filepath: str) -> bool:
         filepath = os.path.abspath(os.path.expanduser(str(filepath)))
-
         if not os.path.isfile(filepath):
-            messagebox.showwarning(
-                UI_TEXT["invalid_file_title"],
-                UI_TEXT["single_file_invalid_path"]
-            )
+            if self._warn_inaccessible_spectrum(filepath):
+                return False
+            messagebox.showwarning(UI_TEXT["invalid_file_title"], UI_TEXT["single_file_invalid_path"])
             return False
-
         if not is_supported_spectrum(filepath):
+            if self._warn_inaccessible_spectrum(filepath):
+                return False
             messagebox.showwarning(UI_TEXT["unsupported_format_title"], UI_TEXT["unsupported_path_message"])
             return False
 
-        if not self.confirm_large_opus_files(
-            [filepath],
-            UI_TEXT["selected_list_origin"],
-            preferred_single_path=filepath,
-        ):
+        selection = self.select_large_opus_files(
+            [filepath], UI_TEXT["selected_list_origin"], preferred_single_path=filepath)
+        if selection is None:
             return False
-
-        folder = os.path.dirname(filepath)
-        self.folder_var.set(folder)
-        self.files = [filepath]
-        self.idx = 0
-        self.update_counter()
-        loaded = self.load_current()
-        if loaded:
+        selected, excluded = selection  # Filtering is disabled when it would leave no files.
+        self._accept_file_list(selected, os.path.dirname(filepath), preferred=filepath,
+                               excluded=excluded, persisted_path=filepath)
+        if self.current is not None:
             self.status_var.set(UI_TEXT["single_file_title"] + f": {filepath}")
-        return bool(loaded)
+            return True
+        return False
 
     def open_folder(self, folder: str, recursive: bool) -> bool:
         folder = os.path.abspath(folder)
-        files = scan_folder(folder, recursive=recursive)
-
-        # No spectra found.
+        files = self.scan_folder_busy(folder, recursive=recursive)
         if not files:
             messagebox.showwarning(UI_TEXT["no_match_title"], UI_TEXT["no_spectrum_at_path"])
             return False
-
         if not self.confirm_file_count(len(files), UI_TEXT["opened_folder_origin"]):
             return False
-
-        if not self.confirm_large_opus_files(
-            files,
-            UI_TEXT["opened_folder_origin"],
-        ):
+        selection = self.select_large_opus_files(files, UI_TEXT["opened_folder_origin"])
+        if selection is None:
             return False
-
-        self.folder_var.set(folder)
-        self.files = files
-        self.idx = 0
-        self.update_counter()
-        return bool(self.load_current())
+        selected, excluded = selection
+        return self._accept_file_list(selected, folder, excluded=excluded)
 
     def open_dropped_items_as_playlist(self, paths, recursive=None):
         if bool(self.single_file_var.get()):
@@ -2303,7 +2869,7 @@ class App(_BaseTk):
         for p in paths:
             ap = os.path.abspath(os.path.expanduser(p))
             if os.path.isdir(ap):
-                items.extend(scan_folder(ap, recursive=recursive))
+                items.extend(self.scan_folder_busy(ap, recursive=recursive))
             elif os.path.isfile(ap):
                 if is_supported_spectrum(ap):
                     items.append(ap)
@@ -2338,18 +2904,17 @@ class App(_BaseTk):
         if not self.confirm_file_count(len(uniq), UI_TEXT["selected_list_origin"]):
             return
 
-        if not self.confirm_large_opus_files(
-            uniq,
-            UI_TEXT["selected_list_origin"],
-        ):
-            return
+        selection = self.select_large_opus_files(uniq, UI_TEXT["selected_list_origin"])
+        if selection is None:
+            return False
+        selected, excluded = selection
 
         if invalid_paths:
             max_show = 8
             shown = [os.path.basename(p) for p in invalid_paths[:max_show]]
             more = len(invalid_paths) - len(shown)
             msg = UI_TEXT["dropped_items_skipped"].format(
-                valid=len(uniq),
+                valid=len(selected),
                 invalid=len(invalid_paths),
                 shown="\n- ".join(shown),
             )
@@ -2357,11 +2922,10 @@ class App(_BaseTk):
                 msg += UI_TEXT["and_more"].format(more=more)
             messagebox.showwarning(UI_TEXT["some_files_skipped_title"], msg)
 
-        self.files = uniq
-        self.idx = 0
-        self.update_counter()
-        self.load_current()
-        self.status_var.set(UI_TEXT["custom_list_loaded"].format(count=len(self.files)))
+        self._accept_file_list(selected, os.path.dirname(str(selected[0])), excluded=excluded)
+        if not excluded and self.current is not None:
+            self.status_var.set(UI_TEXT["custom_list_loaded"].format(count=len(self.files)))
+        return True
 
     def open_file_with_context(self, filepath: str, recursive: bool) -> bool:
         if bool(self.single_file_var.get()):
@@ -2369,36 +2933,21 @@ class App(_BaseTk):
 
         filepath = os.path.abspath(filepath)
         folder = os.path.dirname(filepath)
-
-        files = scan_folder(folder, recursive=recursive)
-
-        # Rare fallback case, but keep it handled.
+        files = self.scan_folder_busy(folder, recursive=recursive)
         if not files:
             messagebox.showwarning(UI_TEXT["no_match_title"], UI_TEXT["no_spectrum_at_path"])
             return False
-
         if not self.confirm_file_count(len(files), UI_TEXT["folder_context_origin"]):
             return False
-
-        if not self.confirm_large_opus_files(
-            files,
-            UI_TEXT["folder_context_origin"],
-            preferred_single_path=filepath,
-        ):
+        selection = self.select_large_opus_files(
+            files, UI_TEXT["folder_context_origin"], preferred_single_path=filepath)
+        if selection is None:
             return False
-
-        self.folder_var.set(folder)
-        self.files = files
-
-        try:
-            self.idx = self.files.index(filepath)
-        except ValueError:
-            # If it was not included for any reason, insert it at the front.
-            self.files.insert(0, filepath)
-            self.idx = 0
-
-        self.update_counter()
-        return bool(self.load_current())
+        selected, excluded = selection
+        # If the requested file was excluded, show the first retained spectrum.
+        # Never sneak the requested large file back into a filtered list.
+        return self._accept_file_list(selected, folder, preferred=filepath,
+                                      excluded=excluded)
 
     def rescan(self):
         if bool(self.single_file_var.get()):
@@ -2406,54 +2955,54 @@ class App(_BaseTk):
             self.status_var.set(UI_TEXT["single_file_subfolders_disabled"])
             return
 
-        folder = self.folder_var.get().strip()
+        # Rescan the accepted folder, never an uncommitted Path-field edit.
+        folder = self._active_folder_path or self.folder_var.get().strip()
         if not folder or not os.path.isdir(folder):
-            self.files = []
-            self.idx = -1
-            self.update_counter()
+            self.recursive_var.set(not bool(self.recursive_var.get()))
             self.status_var.set(UI_TEXT["invalid_folder_status"])
             return
 
         requested_recursive = bool(self.recursive_var.get())
-
-        # Do not overwrite the current list before the file count check
-        # has completed. This keeps the previous safe state intact
-        # if MAX_FILE_COUNT is exceeded or the configured file-count warning prompt is rejected.
-        new_files = scan_folder(folder, requested_recursive)
-
+        new_files = self.scan_folder_busy(folder, requested_recursive)
         if not self.confirm_file_count(len(new_files), UI_TEXT["folder_context_origin_alt"]):
-            # At this point the checkbox state has already changed, because
-            # rescan was triggered by the Checkbutton itself. Restore it so
-            # the UI reflects what is actually still loaded.
             self.recursive_var.set(not requested_recursive)
-            self.update_counter()
-            self.status_var.set(
-                UI_TEXT["loading_cancelled_previous_kept"]
-            )
+            self.status_var.set(UI_TEXT["loading_cancelled_previous_kept"])
             return
-
-        if not self.confirm_large_opus_files(
-            new_files,
-            UI_TEXT["folder_context_origin_alt"],
-        ):
+        selection = self.select_large_opus_files(new_files, UI_TEXT["folder_context_origin_alt"])
+        if selection is None:
             self.recursive_var.set(not requested_recursive)
-            self.update_counter()
-            self.status_var.set("Loading cancelled: large OPUS files were not approved. The previous list remains active.")
+            self.status_var.set(UI_TEXT["loading_cancelled_large_opus"])
             return
-
-        self.files = new_files
-        self.idx = 0 if self.files else -1
-        self.update_counter()
-        if self.idx >= 0:
-            self.load_current()
-        else:
-            self.status_var.set(UI_TEXT["no_match_in_folder_status"])
+        selected, excluded = selection
+        if not selected:
+            # An actual empty folder is allowed during a rescan.
+            self.files = []
+            self.idx = -1
+            self.current = None
+            self._excluded_large_opus_count = 0
+            self._active_folder_path = os.path.abspath(folder)
+            self._committed_path = os.path.abspath(folder)
+            self.folder_var.set(folder)
+            self.update_counter()
+            self.clear_header()
             self.clear_plot()
+            self.status_var.set(UI_TEXT["no_match_in_folder_status"])
+            return
+        self._accept_file_list(selected, folder, excluded=excluded)
 
     def update_counter(self):
         total = len(self.files)
         cur = self.idx + 1 if self.idx >= 0 else 0
-        self.counter_lbl.config(text=f"{cur}/{total}")
+
+        # Indicate files excluded from the filtered list.
+        suffix = (
+            UI_TEXT["excluded_large_opus_counter"].format(
+                count=self._excluded_large_opus_count
+            )
+            if self._excluded_large_opus_count else ""
+        )
+
+        self.counter_lbl.config(text=f"{cur}/{total}{suffix}")
         self.update_navigation_state()
 
     def update_navigation_state(self):
@@ -2484,6 +3033,9 @@ class App(_BaseTk):
         self.ax.set_title("")
         self.ax.set_xlabel(UI_TEXT["axis_wavenumber"])
         self.ax.set_ylabel(UI_TEXT["axis_intensity"])
+        self.apply_minor_ticks()
+        # Also hide the axes after a failed load or an empty folder rescan.
+        self.ax.set_visible(False)
         self.canvas.draw_idle()
         self.update_info_button_state()
         self.refresh_info_window()
@@ -2519,10 +3071,17 @@ class App(_BaseTk):
     def clear_header(self):
         self.show_header_lines([])
 
-    def show_header_lines(self, lines):
+    def show_header_lines(self, lines, error=False):
         values = [str(x or "") for x in (lines or [])][:3]
         values.extend([""] * (3 - len(values)))
-        for widget, text in zip(self.header_fields, values):
+
+        for index, (widget, text) in enumerate(zip(self.header_fields, values)):
+            if index == 2:
+                # Expand the third header field only when displaying an error.
+                widget.configure(
+                    height=7 if error else 1,
+                    wrap="word" if error else "none"
+                )
             self._set_header_field(widget, text)
 
     def _set_persistent_clipboard_text(self, text: str) -> bool:
@@ -2694,7 +3253,7 @@ class App(_BaseTk):
         if len(store_indices) != count:
             store_indices = list(range(1, count + 1))
 
-        label = str(meta.get("series_label", "") or self.current.yunit or "Series")
+        label = str(meta.get("series_label", "") or self.current.yunit or UI_TEXT["series_default_label"])
         return y2d, index, count, store_indices, label
 
     def update_series_navigation_state(self):
@@ -2723,6 +3282,7 @@ class App(_BaseTk):
         else:
             next_btn.state(["!disabled"])
 
+    @busy_operation
     def set_series_index(self, index: int):
         state = self.get_current_series_state()
         if state is None:
@@ -2739,10 +3299,10 @@ class App(_BaseTk):
 
         stored_index = store_indices[index] if index < len(store_indices) else index + 1
         path = getattr(self.current, "path", "") or ""
-        self.status_var.set(
-            f"{path} | {label} {index + 1}/{count} "
-            f"(stored index {stored_index})"
-        )
+        self.status_var.set(UI_TEXT["series_stored_status"].format(
+            path=path, label=label, index=index + 1,
+            count=count, stored_index=stored_index,
+        ))
 
         self.redraw()
         self.update_series_navigation_state()
@@ -2764,7 +3324,7 @@ class App(_BaseTk):
             self.set_series_index(index + 1)
 
     def get_current_info_fields(self) -> List[Dict[str, str]]:
-        if self.current is None or not is_opus_like(getattr(self.current, "path", "")):
+        if self.current is None:
             return []
         return list((self.current.meta or {}).get("info_fields", []) or [])
 
@@ -2773,9 +3333,8 @@ class App(_BaseTk):
         if btn is None:
             return
 
-        # Enable INFO only when the currently displayed OPUS spectrum contains
-        # a recognized active INFO block. Other formats and INFO-less OPUS files
-        # keep the button disabled.
+        # Both native OPUS and SpectraViewer DX expose the same INFO fields.
+        # No source-format-specific UI behavior is needed.
         if self.get_current_info_fields():
             btn.state(["!disabled"])
         else:
@@ -2906,18 +3465,25 @@ class App(_BaseTk):
         if fullpath and fullpath != fname:
             header_lines.append(fullpath)
         header_lines.append(f"{UI_TEXT['error_prefix']}: {msg}")
-        self.show_header_lines(header_lines)
+        self.show_header_lines(header_lines, error=True)
 
         if fullpath:
             self.status_var.set(f"{UI_TEXT['error_prefix']}: {msg} | {UI_TEXT['file_label']}: {fullpath}")
         else:
             self.status_var.set(f"{UI_TEXT['error_prefix']}: {msg}")
 
+    @busy_operation
     def load_current(self) -> bool:
         if self.idx < 0 or self.idx >= len(self.files):
             return False
 
         path = self.files[self.idx]
+        self.status_var.set(
+            UI_TEXT["loading_spectrum_status"].format(
+                filename=os.path.basename(str(path))
+            )
+        )
+        self.update_idletasks()
         loaded = False
         try:
             spec = read_any(str(path), metadata_encoding=self.metadata_encoding)
@@ -3007,14 +3573,35 @@ class App(_BaseTk):
             padx=15, pady=(0, 10), fill="both"
         )
 
-        ok_btn = ttk.Button(about, text="OK", command=on_close)
+        ok_btn = ttk.Button(about, text=UI_TEXT["ok_button"], command=on_close)
         ok_btn.pack(pady=(0, 10))
         ok_btn.focus_set()
         ok_btn.bind("<Return>", on_close)
 
         # UX refinement: keep the window focused and in front.
         about.lift()
-        about.focus_force()
+        ok_btn.focus_force()
+
+    def apply_minor_ticks(self):
+        """Show optional unlabeled divisions, without changing major ticks.
+
+        AutoMinorLocator follows the existing automatic major spacing,
+        including after Matplotlib toolbar zoom/pan operations.
+        """
+        self.ax.xaxis.set_minor_locator(
+            AutoMinorLocator() if self.x_minor_ticks else NullLocator()
+        )
+        self.ax.yaxis.set_minor_locator(
+            AutoMinorLocator() if self.y_minor_ticks else NullLocator()
+        )
+        self.ax.tick_params(
+            axis="x", which="minor", direction="out",
+            bottom=self.x_minor_ticks, top=False, length=3, width=0.6,
+        )
+        self.ax.tick_params(
+            axis="y", which="minor", direction="out",
+            left=self.y_minor_ticks, right=False, length=3, width=0.6,
+        )
 
     def redraw(self):
         if self.current is None:
@@ -3022,6 +3609,9 @@ class App(_BaseTk):
         spec = self.current
         self.ax.clear()
         self.ax.plot(spec.x, spec.y, color=self.line_color, linewidth=self.line_width)
+        # Restore the usual axes, ticks and labels whenever a valid spectrum
+        # becomes active (including recovery after an unsuccessful file load).
+        self.ax.set_visible(True)
 
         # Header fields: 1) filename, 2) sample name, 3) sample form.
         # Store the full strings; no width-dependent ellipsis is applied.
@@ -3030,7 +3620,8 @@ class App(_BaseTk):
         sform = (spec.meta or {}).get("sample_form", "") or ""
         self.show_header_lines([fname, sname, sform])
         self.ax.set_xlabel(spec.xunit)
-        self.ax.set_ylabel(spec.yunit or "Intensity")
+        self.ax.set_ylabel(spec.yunit or UI_TEXT["axis_intensity"])
+        self.apply_minor_ticks()
 
         if not self.invert_x_var.get():
             try:
@@ -3046,6 +3637,46 @@ class App(_BaseTk):
 
         self.canvas.draw_idle()
         self.update_series_navigation_state()
+
+    def current_default_jcamp_name(self) -> str:
+        if not self.current or not self.current.path:
+            return "spectrum.dx"
+        base = os.path.basename(self.current.path)
+        # Do not append an SV marker: source-overwrite protection is enforced
+        # by save_jcamp_dx_file() even when a DX source name is unchanged.
+        if is_jcamp_like(self.current.path):
+            base = os.path.splitext(base)[0]
+        state = self.get_current_series_state()
+        if state is not None:
+            _y2d, index, count, _store_indices, _label = state
+            if count > 1:
+                base += f"_series_{index + 1:04d}"
+        return base + ".dx"
+
+    def save_current_jcamp(self):
+        if self.current is None:
+            messagebox.showinfo(UI_TEXT["save_message_title"],
+                                UI_TEXT["no_loaded_spectrum"])
+            return
+        default = self.current_default_jcamp_name()
+        initialdir = (os.path.dirname(self.current.path)
+                      if self.current.path else os.getcwd())
+        out = filedialog.asksaveasfilename(
+            title=UI_TEXT["save_jcamp_title"],
+            initialdir=initialdir,
+            initialfile=default,
+            defaultextension=".dx",
+            filetypes=[(UI_TEXT["save_jcamp_filter"], "*.dx")],
+        )
+        if not out:
+            return
+        try:
+            save_jcamp_dx_file(self.current, out)
+        except (OSError, ValueError, TypeError, OverflowError) as exc:
+            messagebox.showerror(UI_TEXT["save_jcamp_error_title"],
+                                 str(exc), parent=self)
+            return
+        self.status_var.set(UI_TEXT["saved_status"].format(path=out))
 
     def current_default_png_name(self) -> str:
         if not self.current or not self.current.path:
@@ -3071,7 +3702,7 @@ class App(_BaseTk):
                 ("JPEG", "*.jpg;*.jpeg"),
                 ("PDF", "*.pdf"),
                 ("SVG", "*.svg"),
-                ("All files", "*.*"),
+                (UI_TEXT["all_files"], "*.*"),
             ],
         )
         if not out:

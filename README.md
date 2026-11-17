@@ -10,22 +10,22 @@
 
 # SpectraViewer
 
-SpectraViewer is a lightweight desktop application for opening, browsing, and visually inspecting spectrum files. It is designed as a fast spectrum browser rather than a full spectrum-processing or spectrum-manipulation environment.
+SpectraViewer is a lightweight desktop application for opening, browsing, visually inspecting, and exporting spectrum files. It is designed as a fast spectrum browser rather than a full spectrum-processing or spectrum-manipulation environment.
 
 The program can collect supported spectrum files from a folder, from a folder tree, from a manually selected set of files, or from drag-and-drop input, then display them as a navigable list. It can also browse individual spectra stored in supported OPUS DataSeries files.
 
-SpectraViewer does **not** replace OPUS or other dedicated spectroscopy software. It does not perform spectral processing, manipulation, identification, database searching, or quantitative analysis. Its purpose is quick viewing and convenient browsing.
+SpectraViewer does **not** replace OPUS or other dedicated spectroscopy software. It does not perform spectral processing, manipulation, identification, database searching, or quantitative analysis. Its purpose is quick viewing, convenient browsing, and straightforward spectrum export.
 
 SpectraViewer displays a single spectrum at a time. It does not provide stacked or overlaid multi-spectrum views.
 
 <p align="center">
-  <img src="assets/SpectraViewer_screenshot.png" alt="SpectraViewer 1.1.9 showing an FTIR spectrum and OPUS INFO metadata" width="1000">
+  <img src="assets/SpectraViewer_screenshot.png" alt="SpectraViewer showing an FTIR spectrum and OPUS INFO metadata" width="1000">
 </p>
 
 ## Current version
 
-**Version:** 1.1.9<br>
-**Release:** v1.1.9<br>
+**Version:** 1.2.0<br>
+**Release:** v1.2.0<br>
 **Concept DOI:** 10.5281/zenodo.20715098<br>
 **Author:** Zsolt Hidasi<br>
 **Year:** 2026<br>
@@ -57,15 +57,17 @@ Not all supported file formats contain the same amount or structure of metadata.
 - Use **Single file** mode to inspect only one selected spectrum without loading the surrounding folder context.
 - Display filename, Sample Name, and Sample Form in copyable read-only header fields.
 - Display the active OPUS INFO block in a separate **INFO** window when available.
+- Read back SpectraViewer-specific INFO metadata embedded in JCAMP-DX files exported by SpectraViewer.
 - Select the character encoding used to display text metadata in OPUS and JCAMP-DX files when needed.
 - Choose the X-axis display direction.
 - Use an optional crosshair cursor to read approximate coordinates.
 - Toggle the crosshair with the right mouse button in the plot area.
 - Change the displayed spectrum color.
-- Configure spectrum line width through `SpectraViewer.ini`.
+- Configure spectrum line width and minor X/Y-axis ticks through `SpectraViewer.ini`.
+- Export the currently selected spectrum as a JCAMP-DX (`.dx`) file, including an individual spectrum selected from an OPUS DataSeries.
 - Export the current plot as PNG, JPEG, PDF, or SVG.
 - Use Matplotlib's built-in toolbar for zooming, panning, and restoring the view.
-- File-count and large-OPUS safeguards help avoid accidental loading of very large collections or unusually large files.
+- File-count and large-OPUS safeguards help avoid accidental loading of very large collections or unusually large files; OPUS files larger than 100 MiB are not opened.
 
 ## Operating logic
 
@@ -144,7 +146,7 @@ The main window contains:
 - an **INFO** button,
 - a status bar.
 
-The **INFO** button is enabled when the current OPUS spectrum contains a readable INFO block. The INFO window follows the current spectrum and the selected metadata encoding.
+The **INFO** button is enabled when the current spectrum contains a readable OPUS INFO block or recoverable SpectraViewer-specific INFO metadata in a JCAMP-DX file. The INFO window follows the current spectrum and the selected metadata encoding.
 
 ## Configuration file
 
@@ -159,7 +161,8 @@ Stored settings include:
 - window geometry,
 - last used path,
 - metadata encoding,
-- advanced warning thresholds.
+- advanced warning thresholds,
+- minor X/Y-axis tick settings.
 
 Advanced settings currently include:
 
@@ -169,9 +172,19 @@ warn_file_count = 5000
 large_opus_warn_mb = 20
 ```
 
-`warn_file_count` may be set from 1 to 19999. The hard maximum of 20000 files is internal and cannot be overridden. `large_opus_warn_mb` may be set above 0 and up to 100 MB. Invalid values fall back to their defaults.
+`warn_file_count` may be set from 1 to 19999. The hard maximum of 20000 files is internal and cannot be overridden. `large_opus_warn_mb` may be set above 0 and up to 100 MiB. Invalid values fall back to their defaults. OPUS files larger than **100 MiB** cannot be opened, regardless of the warning setting.
+
+When a scan finds OPUS files above the configured warning threshold, the user may choose to **load the complete eligible file list**, **load only files below the warning threshold**, or **cancel**. Files exceeding the 100 MiB hard limit remain excluded in all cases.
 
 The spectrum line width is also configurable in the INI file. The default is `1.5`; valid values are `0.1` to `5.0`.
+
+Minor tick marks on each axis can be enabled or disabled independently using the following settings (both enabled by default):
+
+```ini
+[view]
+x_minor_ticks = true
+y_minor_ticks = true
+```
 
 Deleting `SpectraViewer.ini` restores the default settings.
 
@@ -185,10 +198,19 @@ Deleting `SpectraViewer.ini` restores the default settings.
 | `Page Up` / `Page Down` | Jump backward / forward by 25 files |
 | `Home` / `End` | First / Last file |
 | `Up` / `Down` | Previous / Next spectrum in DataSeries |
-| `Ctrl+S` | Save current plot as image |
+| `Ctrl+E` | Export the current spectrum as JCAMP-DX (`.dx`) |
+| `Ctrl+Shift+E` | Export the current plot as an image |
 | `Ctrl+Shift+C` | Change spectrum color |
 | `Ctrl+I` | Open INFO window when INFO data are available |
 | `F1` | About window |
+
+## Spectrum export (JCAMP-DX)
+
+The currently selected spectrum can be exported to a JCAMP-DX (`.dx`) file using **Export JCAMP-DX** (`Ctrl+E`). This also works when browsing an individual spectrum inside a supported OPUS DataSeries file.
+
+SpectraViewer writes a JCAMP-DX 5.01 text file using a suitable data representation (`XYDATA` or `XYPOINTS`). Its export was designed with interoperability in mind, but import behavior can differ among spectroscopy applications and versions. Compatibility with every JCAMP-DX reader is not guaranteed.
+
+When INFO metadata are available, SpectraViewer can store them in an additional compressed, encoded, SpectraViewer-specific metadata field and read them back when reopening the exported file. This preserves information such as Hungarian accented text for a SpectraViewer-to-SpectraViewer round trip. **Other applications are not expected to interpret this application-specific field**, and should not be relied upon to display those INFO fields.
 
 ## Plot export
 
@@ -253,15 +275,15 @@ SpectraViewer is intended for quick viewing and browsing rather than full spectr
 
 For compatible OPUS files, processed Absorbance, Transmittance, Reflectance, and Kubelka–Munk spectra can be displayed as individual spectra or browsed sequentially from DataSeries files. OPUS containers may also contain images, auxiliary data, or other blocks that SpectraViewer does not attempt to display.
 
-Large composite OPUS files may require substantial memory and loading time. SpectraViewer therefore warns before opening unusually large OPUS files; the default warning threshold is 20 MB and can be adjusted in `SpectraViewer.ini` up to 100 MB. This is a warning threshold, not a file-size limit.
+Large composite OPUS files may require substantial memory and loading time. SpectraViewer therefore warns before opening unusually large OPUS files; the default warning threshold is 20 MiB and can be adjusted in `SpectraViewer.ini` up to 100 MiB. The warning threshold is separate from the **100 MiB hard limit**: larger native OPUS files are not opened.
 
-SpectraViewer does not perform spectral correction, preprocessing, baseline correction, normalization, library searching, peak picking, or quantitative analysis.
+SpectraViewer does not perform spectral correction, preprocessing, baseline correction, normalization, library searching, peak picking, or quantitative analysis. JCAMP-DX export converts the displayed spectrum to an exchange format; it is not a spectral-processing operation.
 
 ## Localization
 
 The English user interface is the primary public GitHub version.
 
-A matching Hungarian UI variant is preserved for version 1.1.9. The English and Hungarian variants share the same program logic and differ only in the language of the user-facing text.
+A matching Hungarian UI variant is available for version 1.2.0. The English and Hungarian variants share the same program logic and differ only in the language of the user-facing text.
 
 ## Repository structure
 
@@ -278,12 +300,13 @@ SpectraViewer/
     SpectraViewer.ico
     SpectraViewer_banner.png
     SpectraViewer_logo.png
+    SpectraViewer_screenshot.png
   localized/
     hu/
-      SpectraViewer_1.1.9_HU.py
+      SpectraViewer_1.2.0_HU.py
       SpectraViewerMan_HU.pdf
   docs/
-    SpectraViewer_User_Manual_1.1.8.docx
+    SpectraViewer_User_Manual_1.2.0.docx
     SpectraViewerMan_EN.pdf
 ```
 

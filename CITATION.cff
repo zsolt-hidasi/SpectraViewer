@@ -1,9 +1,9 @@
 cff-version: 1.2.0
 message: "If you use SpectraViewer in your work, please cite it using the metadata from this file."
 title: "SpectraViewer"
-version: "1.1.9"
-doi: "10.5281/zenodo.22855439"
-date-released: 2026-09-16
+version: "1.2.0"
+doi: "10.5281/zenodo.20715098"
+date-released: 2026-11-17
 type: software
 authors:
   - family-names: "Hidasi"
@@ -11,8 +11,9 @@ authors:
 abstract: >-
   SpectraViewer is a lightweight spectrum browser for quickly opening,
   viewing, and browsing supported spectrum files, including OPUS native
-  spectrum files, JCAMP-DX files, and DPT data point tables. It is intended
-  for fast visual inspection and navigation through spectrum collections,
+  spectrum files, JCAMP-DX files, and DPT data point tables. It also
+  supports exporting spectra as JCAMP-DX files. It is intended for fast
+  visual inspection and navigation through spectrum collections,
   not for spectral processing or data manipulation.
 keywords:
   - Spectroscopy
